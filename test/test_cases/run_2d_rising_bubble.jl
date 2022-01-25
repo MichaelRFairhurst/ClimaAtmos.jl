@@ -1,7 +1,9 @@
 using Test
 
 using OrdinaryDiffEq: SSPRK33
-using Plots
+using Plots, 
+using ClimaCorePlots
+using ClimaCoreVTK: writevtk
 using UnPack
 
 using CLIMAParameters
@@ -67,12 +69,14 @@ function run_2d_rising_bubble(
             1e-3
     elseif test_mode == :validation
         # for now plot θ for the ending step;
-        simulation = Simulation(model, stepper, dt = dt, tspan = (0.0, 500.0))
+        simulation = Simulation(model, stepper, dt = dt, tspan = (0.0, 10.0))
         @unpack ρ, ρuh, ρw, ρθ = init_2d_rising_bubble(FT, params)
         set!(simulation, :base, ρ = ρ, ρuh = ρuh, ρw = ρw)
         set!(simulation, :thermodynamics, ρθ = ρθ)
         run!(simulation)
         u_end = simulation.integrator.u
+        
+        θ = u_end.thermodynamics.ρθ ./ u_end.base.ρ
 
         # post-processing
         ENV["GKSwstype"] = "nul"
@@ -83,11 +87,11 @@ function run_2d_rising_bubble(
         mkpath(path)
 
         foi = Plots.plot(
-            u_end.thermodynamics.ρθ ./ u_end.base.ρ,
+            θ,
             clim = (300.0, 300.8),
         )
-        Plots.png(foi, joinpath(path, "dry_rising_bubble_2d_FT_$FT"))
-
+        Plots.png(foi, joinpath(path, "rising_bubble_2d_FT_$FT"))
+        writevtk(joinpath(path, "rising_bubble_2d_FT_$FT"), θ)
         @test true # check is visual
     else
         throw(ArgumentError("$test_mode incompatible with test case."))

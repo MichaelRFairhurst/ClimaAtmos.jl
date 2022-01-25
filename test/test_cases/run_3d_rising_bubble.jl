@@ -2,6 +2,8 @@ using Test
 
 using OrdinaryDiffEq: SSPRK33
 using Plots
+using ClimaCorePlots
+using ClimaCoreVTK: writevtk
 using UnPack
 
 using CLIMAParameters
@@ -197,7 +199,7 @@ function run_3d_rising_bubble(
             # make output directory
             path = joinpath(@__DIR__, "output_validation")
             mkpath(path)
-            ClimaCoreVTK.writevtk(joinpath(path, "test"), e_tot)
+            writevtk(joinpath(path, "rising_bubble_3d_FT_$FT"), e_tot)
             #TODO: Additional thermodynamics diagnostic vars
             @test true # check is visual
         end

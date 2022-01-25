@@ -1,7 +1,7 @@
 using Test
 
 using OrdinaryDiffEq: SSPRK33
-using Plots
+using Plots, ClimaCorePlots, ClimaCoreVTK
 using UnPack
 
 using CLIMAParameters

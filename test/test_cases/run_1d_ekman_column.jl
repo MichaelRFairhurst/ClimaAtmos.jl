@@ -2,7 +2,7 @@ using Test
 
 using JLD2
 using OrdinaryDiffEq: SSPRK33, CallbackSet, DiscreteCallback
-using Plots
+using Plots, ClimaCorePlots
 using UnPack
 
 using CLIMAParameters
