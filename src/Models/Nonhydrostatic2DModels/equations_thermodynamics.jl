@@ -17,8 +17,13 @@ end
     ρw = Y.base.ρw
     ρθ = Y.thermodynamics.ρθ
 
+    # Primitive
+    θ = @. ρθ ./ ρ
+
     # operators /w boundary conditions
     hdiv = Operators.Divergence()
+    hwdiv = Operators.WeakDivergence()
+    hgrad = Operators.Gradient()
     vector_vdiv_f2c = Operators.DivergenceF2C(
         bottom = Operators.SetValue(Geometry.WVector(FT(0))),
         top = Operators.SetValue(Geometry.WVector(FT(0))),
@@ -28,7 +33,13 @@ end
         top = Operators.Extrapolate(),
     )
 
-    @. dY.thermodynamics.ρθ = -hdiv(ρuh * ρθ / ρ)
+    # Hyperdiffusion
+    κ₄ = 100.0;
+    χθ = @. hwdiv(hgrad(θ))
+    Spaces.weighted_dss!(χθ)
+    @. dY.thermodynamics.ρθ = -κ₄ * hwdiv(ρ * hgrad(χθ))
+
+    @. dY.thermodynamics.ρθ -= hdiv(ρuh * ρθ / ρ)
     @. dY.thermodynamics.ρθ -= vector_vdiv_f2c(ρw * scalar_interp_c2f(ρθ / ρ))
     Spaces.weighted_dss!(dY.thermodynamics.ρθ)
 end
