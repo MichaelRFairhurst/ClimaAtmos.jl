@@ -34,6 +34,7 @@ end
     )
 
     # Hyperdiffusion
+    @show "Weak-divergence θ hyperdiffusion";
     κ₄ = 100.0;
     χθ = @. hwdiv(hgrad(θ))
     Spaces.weighted_dss!(χθ)
