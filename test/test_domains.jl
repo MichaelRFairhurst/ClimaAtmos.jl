@@ -100,4 +100,3 @@ float_types = (Float32, Float64)
         }
     end
 end
-

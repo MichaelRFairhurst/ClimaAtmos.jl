@@ -40,4 +40,3 @@ include("make_function_space.jl")
 Base.eltype(::AbstractDomain{FT}) where {FT} = FT
 
 end # module
-

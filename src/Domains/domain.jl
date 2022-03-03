@@ -245,4 +245,3 @@ function Base.show(io::IO, domain::SphericalShell)
     print(io, "\n\tpoly order:\t", domain.npolynomial)
     print(io, "\n\tVertical stretching rule:\t", "$(domain.stretching)")
 end
-

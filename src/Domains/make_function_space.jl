@@ -103,4 +103,3 @@ function make_function_space(domain::SphericalShell{FT}) where {FT}
 
     return hv_center_space, hv_face_space
 end
-
