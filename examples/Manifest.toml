@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.7.0"
+julia_version = "1.7.2"
 manifest_format = "2.0"
 
 [[deps.AbstractFFTs]]
@@ -120,9 +120,9 @@ version = "0.4.3"
 
 [[deps.CPUSummary]]
 deps = ["CpuId", "IfElse", "Static"]
-git-tree-sha1 = "913b28a04929053e4310d0a4915f1efe195c0ce6"
+git-tree-sha1 = "80f3d536df634cabed8b98ad3f0cea3a715fd254"
 uuid = "2a0fbf3d-bb9c-48f3-b0a9-814d99fd7ab9"
-version = "0.1.19"
+version = "0.1.20"
 
 [[deps.CUDA]]
 deps = ["AbstractFFTs", "Adapt", "BFloat16s", "CEnum", "CompilerSupportLibraries_jll", "ExprTools", "GPUArrays", "GPUCompiler", "LLVM", "LazyArtifacts", "Libdl", "LinearAlgebra", "Logging", "Printf", "Random", "Random123", "RandomNumbers", "Reexport", "Requires", "SparseArrays", "SpecialFunctions", "TimerOutputs"]
@@ -173,42 +173,39 @@ version = "0.1.2"
 
 [[deps.ClimaComms]]
 deps = ["CUDA", "KernelAbstractions", "StaticArrays"]
-git-tree-sha1 = "b144631d46a36eb36add96cb5cd32693ea53ef11"
+git-tree-sha1 = "50fbb76557f11e28ec21ad2fbe5e7547f1b1f432"
 uuid = "3a4d1b5c-c61d-41fd-a00a-5873ba7a1b0d"
-version = "0.1.1"
+version = "0.3.0"
 
 [[deps.ClimaCommsMPI]]
 deps = ["ClimaComms", "KernelAbstractions", "MPI"]
-git-tree-sha1 = "d97be357454b856ffb48ede77043509f39093740"
+git-tree-sha1 = "2a1857a51eab7e1b15dd709ccef3c3ccabd7a6f6"
 uuid = "5f86816e-8b66-43b2-912e-75384f99de49"
-version = "0.1.1"
+version = "0.3.2"
 
 [[deps.ClimaCore]]
-deps = ["Adapt", "BlockArrays", "CUDA", "ClimaComms", "CubedSphere", "DiffEqBase", "DocStringExtensions", "ForwardDiff", "GaussQuadrature", "IntervalSets", "LinearAlgebra", "RecursiveArrayTools", "RootSolvers", "Rotations", "SparseArrays", "Static", "StaticArrays", "Statistics", "UnPack"]
-git-tree-sha1 = "7caf4f9d92ba3038c3ec9886920844e4efa7a1de"
+deps = ["Adapt", "BlockArrays", "CUDA", "ClimaComms", "CubedSphere", "DataStructures", "DiffEqBase", "DocStringExtensions", "ForwardDiff", "GaussQuadrature", "IntervalSets", "LinearAlgebra", "RecursiveArrayTools", "RootSolvers", "Rotations", "SparseArrays", "Static", "StaticArrays", "Statistics", "UnPack"]
+git-tree-sha1 = "5dbe75f49ca1d240530863a26e9ce790d3c39e57"
 uuid = "d414da3d-4745-48bb-8d80-42e94e092884"
-version = "0.9.0"
+version = "0.10.0"
 
 [[deps.ClimaCorePlots]]
 deps = ["ClimaCore", "RecipesBase", "StaticArrays", "TriplotBase"]
-git-tree-sha1 = "edbd0a2d38bb9de464d21a7d7e6b0457fb9591c3"
+git-tree-sha1 = "fb369432478d010ba9a2bd06b288d7a40467903b"
 uuid = "cf7c7e5a-b407-4c48-9047-11a94a308626"
-version = "0.2.2"
+version = "0.2.3"
 
 [[deps.ClimaCoreTempestRemap]]
 deps = ["ClimaCore", "Dates", "LinearAlgebra", "NCDatasets", "PkgVersion", "TempestRemap_jll", "Test"]
-git-tree-sha1 = "c4560292ff9f5d1f8ef64eb7195fe04fce1fdf99"
-repo-rev = "3e1398e"
-repo-subdir = "lib/ClimaCoreTempestRemap"
-repo-url = "https://github.com/CliMA/ClimaCore.jl.git"
+git-tree-sha1 = "f70e2666a48c38bc95cb40d5cc99bedc0dc8b0e3"
 uuid = "d934ef94-cdd4-4710-83d6-720549644b70"
-version = "0.3.1"
+version = "0.3.3"
 
 [[deps.ClimaCoreVTK]]
 deps = ["ClimaCore", "WriteVTK"]
-git-tree-sha1 = "f363ccc8d31811ad01995155b7c2f580bb16f0b5"
+git-tree-sha1 = "2a0f6f12ccdf50089e708b68e73b1fe08fb53cd8"
 uuid = "c8b6d40d-e815-466f-95ae-c48aefa668fa"
-version = "0.7.0"
+version = "0.7.1"
 
 [[deps.CloseOpenIntervals]]
 deps = ["ArrayInterface", "Static"]
@@ -811,9 +808,9 @@ version = "1.0.0"
 
 [[deps.JET]]
 deps = ["InteractiveUtils", "JuliaInterpreter", "LoweredCodeUtils", "MacroTools", "Pkg", "Revise", "Test"]
-git-tree-sha1 = "5fa5f0fff03395b347516b5f4e21c37191cf9167"
+git-tree-sha1 = "db7e3490a86714a183d5b11576f25340160783ff"
 uuid = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
-version = "0.5.13"
+version = "0.5.14"
 
 [[deps.JLD2]]
 deps = ["FileIO", "MacroTools", "Mmap", "OrderedCollections", "Pkg", "Printf", "Reexport", "TranscodingStreams", "UUIDs"]
@@ -1757,9 +1754,9 @@ version = "0.3.4"
 
 [[deps.TurbulenceConvection]]
 deps = ["CLIMAParameters", "ClimaCore", "CloudMicrophysics", "Dierckx", "Distributions", "DocStringExtensions", "FastGaussQuadrature", "Flux", "LambertW", "LinearAlgebra", "OperatorFlux", "StaticArrays", "StatsBase", "StochasticDiffEq", "Thermodynamics", "UnPack"]
-git-tree-sha1 = "02c410782c78501ae9ab5d8fa8c641118f5eca49"
+git-tree-sha1 = "05d0b7018975563858d31783898645a2acd14953"
 uuid = "8e072fc4-01f8-44fb-b9dc-f9336c367e6b"
-version = "0.18.0"
+version = "0.19.0"
 
 [[deps.URIs]]
 git-tree-sha1 = "97bbe755a53fe859669cd907f2d96aee8d2c1355"
