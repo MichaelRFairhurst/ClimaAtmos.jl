@@ -262,6 +262,7 @@ struct RRTMGPModel{R, I, B, L, P, S, V}
     radiation_mode::R
     interpolation::I
     bottom_extrapolation::B
+    implied_values::Symbol
     add_isothermal_boundary_layer::Bool
     disable_longwave::Bool
     disable_shortwave::Bool
@@ -357,6 +358,21 @@ array.
   `center_temperature` must also be specified, and, if `face_pressure` is
   specified, then `face_temperature` must also be specified)
 - `surface_temperature`: temperature of the surface in K (required)
+- arguments only available when `!disable_longwave`:
+    - `surface_emissivity`: longwave emissivity of the surface (required)
+    - `top_of_atmosphere_lw_flux_dn`: incoming longwave radiation in W/m^2
+      (assumed to be 0 by default)
+- arguments only available when `!disable_shortwave`:
+    - `direct_sw_surface_albedo`: direct shortwave albedo of the surface
+      (required)
+    - `diffuse_sw_surface_albedo`: diffuse shortwave albedo of the surface
+      (required)
+    - `solar_zenith_angle`: zenith angle of sun in radians (required)
+    - `weighted_irradiance`: irradiance of sun in W/m^2 (required); the incoming
+      direct shortwave radiation is given by
+      `model.weighted_irradiance .* cos.(model.solar_zenith_angle)`
+    - `top_of_atmosphere_diffuse_sw_flux_dn`: incoming diffuse shortwave
+      radiation in W/m^2 (assumed to be 0 by default)
 - arguments only available when `radiation_mode isa GrayRadiation`:
     - `lapse_rate`: a scalar value that specifies the lapse rate throughout the
       atmosphere (required); this is a constant that can't be modified after the
@@ -364,8 +380,6 @@ array.
     - `optical_thickness_parameter`: the longwave optical depth at the surface
       (required)
 - arguments only available when `!(radiation_mode isa GrayRadiation)`:
-    - `latitude`: latitude in degrees (assumed to be 45 by default); used for
-      computing the concentration of air in molecules/cm^2
     - `center_volume_mixing_ratio_h2o`: volume mixing ratio of water vapor on
       cell centers (required)
     - `center_volume_mixing_ratio_o3`: volume mixing ratio of ozone on cell
@@ -395,21 +409,8 @@ array.
         - `ice_roughness`: either 1, 2, or 3, with 3 corresponding to the
         roughest ice (required); this is a constant that can't be modified after
         the model is constructed
-- arguments only available when `!disable_longwave`:
-    - `surface_emissivity`: longwave emissivity of the surface (required)
-    - `top_of_atmosphere_lw_flux_dn`: incoming longwave radiation in W/m^2
-      (assumed to be 0 by default)
-- arguments only available when `!disable_shortwave`:
-    - `solar_zenith_angle`: zenith angle of sun in radians (required)
-    - `weighted_irradiance`: irradiance of sun in W/m^2 (required); the incoming
-      direct shortwave radiation is given by
-      `model.weighted_irradiance .* cos.(model.solar_zenith_angle)`
-    - `direct_sw_surface_albedo`: direct shortwave albedo of the surface
-      (required)
-    - `diffuse_sw_surface_albedo`: diffuse shortwave albedo of the surface
-      (required)
-    - `top_of_atmosphere_diffuse_sw_flux_dn`: incoming diffuse shortwave
-      radiation in W/m^2 (assumed to be 0 by default)
+    - `latitude`: latitude in degrees (assumed to be 45 by default); used for
+      computing the concentration of air in molecules/cm^2
 - arguments only available when
   `requires_z(interpolation) || requires_z(bottom_extrapolation)`:
     - `center_z`: z-coordinate in m at cell centers
@@ -543,9 +544,9 @@ function RRTMGPModel(
         flux_lw = RRTMGP.Fluxes.FluxLW(ncol, nlay, FT, DA)
         fluxb_lw = radiation_mode isa GrayRadiation ? nothing :
             RRTMGP.Fluxes.FluxLW(ncol, nlay, FT, DA)
-        set_and_save!(flux_lw2.flux_up, "face_lw_flux_up", t...)
-        set_and_save!(flux_lw2.flux_dn, "face_lw_flux_dn", t...)
-        set_and_save!(flux_lw2.flux_net, "face_lw_flux", t...)
+        set_and_save!(flux_lw.flux_up, "face_lw_flux_up", t...)
+        set_and_save!(flux_lw.flux_dn, "face_lw_flux_dn", t...)
+        set_and_save!(flux_lw.flux_net, "face_lw_flux", t...)
         if radiation_mode isa AllSkyRadiationWithClearSkyDiagnostics
             flux_lw2 = RRTMGP.Fluxes.FluxLW(ncol, nlay, FT, DA)
             set_and_save!(flux_lw2.flux_up, "face_clear_lw_flux_up", t...)
@@ -625,7 +626,7 @@ function RRTMGPModel(
         sfc_alb_diffuse = DA{FT}(undef, nbnd_sw, ncol)
         set_and_save!(sfc_alb_diffuse, "diffuse_sw_surface_albedo", t..., dict)
         name = "top_of_atmosphere_diffuse_sw_flux_dn"
-        if Symbol(name) in keys(init_dict)
+        if Symbol(name) in keys(dict)
             @warn "incoming diffuse shortwave fluxes are not yet implemented \
                    in RRTMGP.jl; the value of $name will be ignored"
             inc_flux_diffuse = DA{FT}(undef, ncol, ngpt_sw)
@@ -705,7 +706,7 @@ function RRTMGPModel(
             ncol,
         )
     else
-        if !(:latitude in keys(init_dict))
+        if !(:latitude in keys(dict))
             lon = lat = nothing
         else
             lon = DA{FT}(undef, ncol) # TODO: lon required but unused
@@ -794,7 +795,8 @@ function RRTMGPModel(
         )
     end
 
-    op_type = use_one_scalar ? RRTMGP.Optics.OneScalar : RRTMGP.Optics.TwoStream
+    op_type = use_one_scalar_mode ? RRTMGP.Optics.OneScalar :
+        RRTMGP.Optics.TwoStream
     solver = RRTMGP.RTE.Solver(
         as,
         op_type(FT, ncol, nlay, DA),
@@ -827,6 +829,7 @@ function RRTMGPModel(
         radiation_mode,
         interpolation,
         bottom_extrapolation,
+        implied_values,
         add_isothermal_boundary_layer,
         disable_longwave,
         disable_shortwave,
@@ -888,39 +891,34 @@ function set_and_save!(
         domain_value = pop!(dict, domain_symbol)
     end
 
-    if (
-        (startswith(name, "center_") || startswith(name, "face_")) &&
-        extension_nlay > 0
-    )
-        if isnothing(dict)
-            extension_value = NaN
-        else
-            if !(extension_symbol in keys(dict))
-                if domain_value isa Real
-                    extension_value = domain_value
-                else
-                    throw(UndefKeywordError(extension_symbol))
-                end
-            end
-            extension_value = pop!(dict, extension_symbol)
-        end
-
-        if startswith(name, "center_")
-            domain_range = 1:domain_nlay
-            extension_range =
-                (domain_nlay + 1):(domain_nlay + extension_nlay)
-        else # startswith(name, "face_")
-            domain_range = 1:(domain_nlay + 1)
-            extension_range =
-                (domain_nlay + 2):(domain_nlay + extension_nlay + 1)
-        end
+    if startswith(name, "center_") || startswith(name, "face_")
+        domain_range = startswith(name, "center_") ? (1:domain_nlay) :
+            (1:(domain_nlay + 1))
         domain_view = view(array, domain_range, :)
-        extension_view = view(array, extension_range, :)
-
         set_array!(domain_view, domain_value, domain_symbol)
         push!(views, (domain_symbol, domain_view))
-        set_array!(extension_view, extension_value, extension_symbol)
-        push!(views, (extension_symbol, extension_view))
+
+        if extension_nlay > 0
+            if isnothing(dict)
+                extension_value = NaN
+            else
+                if !(extension_symbol in keys(dict))
+                    if domain_value isa Real
+                        extension_value = domain_value
+                    else
+                        throw(UndefKeywordError(extension_symbol))
+                    end
+                end
+                extension_value = pop!(dict, extension_symbol)
+            end
+
+            extension_range = startswith(name, "center_") ?
+                ((domain_nlay + 1):(domain_nlay + extension_nlay)) :
+                ((domain_nlay + 2):(domain_nlay + extension_nlay + 1))
+            extension_view = view(array, extension_range, :)
+            set_array!(extension_view, extension_value, extension_symbol)
+            push!(views, (extension_symbol, extension_view))
+        end
     else
         set_array!(array, domain_value, domain_symbol)
         push!(views, (domain_symbol, array))
@@ -972,22 +970,22 @@ function update_implied_values!(model)
         z_lay = parent(model.center_z)
         z_lev = parent(model.face_z)
     end
-    if !(:center_pressure in propertynames(model))
+    if model.implied_values == :center
         mode = model.interpolation
-        outs = requires_z(mode) ? (p_lay, t_lay) : (p_lay, t_lay, z_lay)
-        ins = requires_z(mode) ? (p_lev, t_lev) : (p_lev, t_lev, z_lev)
+        outs = requires_z(mode) ? (p_lay, t_lay, z_lay) : (p_lay, t_lay)
+        ins = requires_z(mode) ? (p_lev, t_lev, z_lev) : (p_lev, t_lev)
         update_views(interp!, mode, outs, ins, (), 1:nlay, 1:nlay, 2:(nlay + 1))
-    else # !(:face_pressure in propertynames(model))
+    else # model.implied_values == :face
         mode = model.interpolation
-        outs = requires_z(mode) ? (p_lev, t_lev) : (p_lev, t_lev, z_lev)
-        ins = requires_z(mode) ? (p_lay, t_lay) : (p_lay, t_lay, z_lay)
+        outs = requires_z(mode) ? (p_lev, t_lev, z_lev) : (p_lev, t_lev)
+        ins = requires_z(mode) ? (p_lay, t_lay, z_lay) : (p_lay, t_lay)
         update_views(interp!, mode, outs, ins, (), 2:nlay, 1:(nlay - 1), 2:nlay)
         others = (t_sfc, model.params)
         update_views(extrap!, mode, outs, ins, others, nlay + 1, nlay, nlay - 1)
         mode = model.bottom_extrapolation isa SameAsInterpolation ?
             model.interpolation : model.bottom_extrapolation
-        outs = requires_z(mode) ? (p_lev, t_lev) : (p_lev, t_lev, z_lev)
-        ins = requires_z(mode) ? (p_lay, t_lay) : (p_lay, t_lay, z_lay)
+        outs = requires_z(mode) ? (p_lev, t_lev, z_lev) : (p_lev, t_lev)
+        ins = requires_z(mode) ? (p_lay, t_lay, z_lay) : (p_lay, t_lay)
         update_views(extrap!, mode, outs, ins, others, 1, 1, 2)
     end
     p_min = get_p_min(model)
@@ -1102,10 +1100,10 @@ function update_sw_fluxes!(::AllSkyRadiationWithClearSkyDiagnostics, model)
     )
 end
 
-update_net_flux!(radiation_mode, model) =
+update_net_fluxes!(radiation_mode, model) =
     parent(model.face_flux) .=
         parent(model.face_lw_flux) .+ parent(model.face_sw_flux)
-function update_net_flux!(::AllSkyRadiationWithClearSkyDiagnostics, model)
+function update_net_fluxes!(::AllSkyRadiationWithClearSkyDiagnostics, model)
     parent(model.face_clear_flux) .=
         parent(model.face_clear_lw_flux) .+ parent(model.face_clear_sw_flux)
     parent(model.face_flux) .=
