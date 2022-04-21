@@ -1,11 +1,21 @@
-using CLIMAParameters: Planet
-using ClimaCore: Fields, DataLayouts
-using RRTMGP
+using Pkg
 using NCDatasets
+using RRTMGP
+using CLIMAParameters: AbstractEarthParameterSet, Planet
+using ClimaCore: Fields, DataLayouts
 
-# Utility function for extracting a view of an array from a Field
+"""
+    field2array(field)
+
+Extracts a view of a `ClimaCore` `Field`'s underlying array. Can be used to
+simplify the process of getting and setting values in an `RRTMGPModel`; e.g.
+```
+    model.center_temperature .= field2array(center_temperature_field)
+    field2array(face_flux_field) .= model.face_flux
+```
+"""
 function field2array(field::Fields.Field)
-    if eltype(field) != eltype(parent(field))
+    if eltype(field) != eltype(parent(field)) # if size along F-axis is not 1
         error("field2array only works when the element type of the Field is \
                also the base type of the underlying array")
     end
@@ -22,6 +32,12 @@ data2array(data::DataLayoutWithoutV) = reshape(parent(data), :)
 data2array(data::DataLayouts.AbstractData) =
     error("data2array not yet implemented for $(typeof(data).name.wrapper)")
 
+"""
+    rrtmgp_artifact(subfolder, file_name)
+
+Constructs an `NCDataset` from the `RRTMGP.jl` artifact stored in
+`RRTMGPReferenceData/<subfolder>/<file_name>`.
+"""
 function rrtmgp_artifact(subfolder, file_name)
     artifact_name = "RRTMGPReferenceData"
     artifacts_file =
@@ -36,9 +52,87 @@ end
 abstract type AbstractRadiationMode end
 struct GrayRadiation <: AbstractRadiationMode end
 struct ClearSkyRadiation <: AbstractRadiationMode end
-struct FullRadiation <: AbstractRadiationMode end
-struct FullRadiationWithClearSkyDiagnostics <: AbstractRadiationMode end
+struct AllSkyRadiation <: AbstractRadiationMode end
+struct AllSkyRadiationWithClearSkyDiagnostics <: AbstractRadiationMode end
 
+"""
+    abstract type AbstractInterpolation
+
+A method for obtaining cell face pressures/temperatures from cell center
+pressures/temperatures, or vice versa. The available options are `BestFit`,
+`UniformZ`, `UniformP`, `GeometricMean`, and `ArithmeticMean`. `BestFit`
+requires z-coordinates to be provided, while the other options do not. If both
+cell center and cell face values are provided, `NoInterpolation` should be used.
+
+To get cell face values from cell center values, an `AbstractInterpolation` is
+used for interpolation on the interior faces and for extrapolation on the
+boundary faces. To get cell center values from cell face values, it is only used
+for interpolation.
+
+For `BestFit`, we start by assuming that there is some constant lapse rate
+    ∂T(z)/∂z = L.
+This tells us that, for some constant T₀,
+    T(z) = T₀ + L * z.
+Since T(z₁) = T₁ and T(z₂) = T₂, for some z₁ != z₂, we have that
+    T₁ = T₀ + L * z₁ and T₂ = T₀ + L * z₂ ==>
+    T₂ - T₁ = L * (z₂ - z₁) ==>
+    L = (T₂ - T₁) / (z₂ - z₁) ==>
+    T₁ = T₀ + (T₂ - T₁) / (z₂ - z₁) * z₁ ==>
+    T₀ = (T₁ * z₂ - T₂ * z₁) / (z₂ - z₁) ==>
+    T(z) = T₁ + (T₂ - T₁) / (z₂ - z₁) * (z - z₁).
+To get p(z), we do different things depending on whether or not T₁ == T₂ (i.e.,
+whether or not L == 0).
+If T₁ == T₂, we assume hydrostatic equilibrium, so that, for some constant C,
+    ∂p(z)/∂z = C * p(z).
+This tells us that, for some constant p₀,
+    p(z) = p₀ * exp(C * z).
+Since p(z₁) = p₁ and p(z₂) = p₂, we have that
+    p₁ = p₀ * exp(C * z₁) and p₂ = p₀ * exp(C * z₂) ==>
+    p₂ / p₁ = exp(C * (z₂ - z₁)) ==>
+    C = log(p₂ / p₁) / (z₂ - z₁) ==>
+    p₁ = p₀ * (p₂ / p₁)^(z₁ / (z₂ - z₁)) ==>
+    p₀ = p₁ / (p₂ / p₁)^(z₁ / (z₂ - z₁)) ==>
+    p(z) = p₁ * (p₂ / p₁)^((z - z₁) / (z₂ - z₁)).
+If T₁ != T₂, we assume that p and T are governed by an isentropic process, so
+that, for some constants A and B,
+    p(z) = A * T(z)^B.
+Since p(z₁) = p₁, p(z₂) = p₂, T(z₁) = T₁, and T(z₂) = T₂, we have that
+    p₁ = A * T₁^B and p₂ = A * T₂^B ==>
+    p₂ / p₁ = (T₂ / T₁)^B ==>
+    B = log(p₂ / p₁) / log(T₂ / T₁) ==>
+    p₁ = A * (p₂ / p₁)^(log(T₁) / log(T₂ / T₁)) ==>
+    A = p₁ / (p₂ / p₁)^(log(T₁) / log(T₂ / T₁)) ==>
+    p(z) = p₁ * (p₂ / p₁)^(log(T(z) / T₁) / log(T₂ / T₁)).
+So, in conclusion, we have that
+    T(z) = T₁ + (T₂ - T₁) / (z₂ - z₁) * (z - z₁) and
+    p(z) = T₁ == T₂ ?
+           p₁ * (p₂ / p₁)^((z - z₁) / (z₂ - z₁)) :
+           p₁ * (p₂ / p₁)^(log(T(z) / T₁) / log(T₂ / T₁)).
+
+`UniformZ`, `UniformP`, and `GeometricMean` are all special cases of `BestFit`
+that assume a particular value for z in order to avoid requiring z-coordinates.
+For `UniformZ`, we assume that
+    z = (z₁ + z₂) / 2.
+This tells us that
+    T(z) = (T₁ + T₂) / 2 and
+    p(z) = T₁ == T₂ ?
+        sqrt(p₁ * p₂) :
+        p₁ * (p₂ / p₁)^(log(T(z) / T₁) / log(T₂ / T₁)).
+For `UniformP`, we assume that T₁ != T₂ and p₁ != p₂, and that
+    z = z₁ + (z₂ - z₁) / (T₂ / T₁ - 1) *
+        ((T₂ / T₁)^(log((1 + p₂ / p₁) / 2) / log(p₂ / p₁)) - 1).
+This tells us that
+    T(z) = T₁ * (T₂ / T₁)^(log(p(z) / p₁) / log(p₂ / p₁)) and
+    p(z) = (p₁ + p₂) / 2.
+For `GeometricMean`, we assume that
+    z = z₁ + (z₂ - z₁) / (sqrt(T₂ / T₁) + 1).
+This tells us that
+    T(z) = sqrt(T₁ * T₂) and p(z) = sqrt(p₁ * p₂).
+
+Finally, `ArithmeticMean` is the simplest possible interpolation method:
+    T(z) = (T₁ + T₂) / 2 and
+    p(z) = (p₁ + p₂) / 2.
+"""
 abstract type AbstractInterpolation end
 struct NoInterpolation <: AbstractInterpolation end
 struct ArithmeticMean <: AbstractInterpolation end
@@ -47,93 +141,121 @@ struct UniformZ <: AbstractInterpolation end
 struct UniformP <: AbstractInterpolation end
 struct BestFit <: AbstractInterpolation end
 
+"""
+    abstract type AbstractBottomExtrapolation
+
+A method for obtaining the bottom cell face pressure/temperature from the cell
+center pressures/temperatures above it. The available options are
+`SameAsInterpolation`, `UseSurfaceTempAtBottom`, and `HydrostaticBottom`.
+`SameAsInterpolation` uses the interpolation method to extrapolate the bottom
+cell face values, while `UseSurfaceTempAtBottom` and `HydrostaticBottom` provide
+alternative methods. `HydrostaticBottom` requires z-coordinates to be provided,
+while `UseSurfaceTempAtBottom` does not.
+
+For `UseSurfaceTempAtBottom` and `HydrostaticBottom`, we assume that we have a
+dry ideal gas undergoing an isentropic process, so that, for some constant A,
+    p(z) = A * T(z)^(cₚ / R).
+Since p(z⁺) = p⁺ and T(z⁺) = T⁺, where z⁺ is the z-coordinate of the first cell
+center above the bottom cell face, we have that
+    p⁺ = A * T⁺^(cₚ / R) ==>
+    A = p⁺ / T⁺^(cₚ / R) ==>
+    p(z) = p⁺ * (T(z) / T⁺)^(cₚ / R).
+
+For `UseSurfaceTempAtBottom`, we assume that the air at the bottom cell face is
+in thermal equilibrium with the surface, whose temperature is Tₛ, so that
+    T(z) = Tₛ.
+
+For `HydrostaticBottom`, we assume that the lapse rate in the bottom cell is
+    ∂T(z)/∂z = g / cₚ.
+This tells us that, for some constant T₀,
+    T(z) = T₀ + g / cₚ * z.
+Since T(z⁺) = T⁺, we have that
+    T⁺ = T₀ + g / cₚ * z⁺ ==>
+    T₀ = T⁺ - g / cₚ * z⁺ ==>
+    T(z) = T⁺ + g / cₚ * (z - z⁺).
+"""
 abstract type AbstractBottomExtrapolation end
 struct SameAsInterpolation <: AbstractBottomExtrapolation end
 struct UseSurfaceTempAtBottom <: AbstractBottomExtrapolation end
 struct HydrostaticBottom <: AbstractBottomExtrapolation end
 
-# NOTE: GeometricMean, UniformZ, and UniformP are all special cases of BestFit
-#       (they assume different values for z, rather than using the true values),
-#       but ArithmeticMean, HydrostaticBottom, and UseSurfaceTempAtBottom are
-#       not consistent with BestFit.
-
 requires_z(::Any) = false
 requires_z(::Union{BestFit, HydrostaticBottom}) = true
 
-uniform_z_p(t, t₁, t₂, p₁, p₂) = t₁ == t₂ ?
-    p₁ * (p₂ / p₁)^(1/2) : p₁ * (p₂ / p₁)^(log(t / t₁) / log(t₂ / t₁))
-best_fit_p(t, t₁, t₂, p₁, p₂, z, z₁, z₂) = t₁ == t₂ ?
+uniform_z_p(T, p₁, T₁, p₂, T₂) = T₁ == T₂ ?
+    sqrt(p₁ * p₂) : p₁ * (p₂ / p₁)^(log(T / T₁) / log(T₂ / T₁))
+best_fit_p(T, z, p₁, T₁, z₁, p₂, T₂, z₂) = T₁ == T₂ ?
     p₁ * (p₂ / p₁)^((z - z₁) / (z₂ - z₁)) :
-    p₁ * (p₂ / p₁)^(log(t / t₁) / log(t₂ / t₁))
+    p₁ * (p₂ / p₁)^(log(T / T₁) / log(T₂ / T₁))
 
-function interp!(::ArithmeticMean, t, p, tꜜ, tꜛ, pꜜ, pꜛ)
-    @. t = (tꜜ + tꜛ) / 2
+function interp!(::ArithmeticMean, p, T, pꜜ, Tꜜ, pꜛ, Tꜛ)
+    @. T = (Tꜜ + Tꜛ) / 2
     @. p = (pꜜ + pꜛ) / 2
 end
-function interp!(::GeometricMean, t, p, tꜜ, tꜛ, pꜜ, pꜛ)
-    @. t = sqrt(tꜜ * tꜛ)
+function interp!(::GeometricMean, p, T, pꜜ, Tꜜ, pꜛ, Tꜛ)
+    @. T = sqrt(Tꜜ * Tꜛ)
     @. p = sqrt(pꜜ * pꜛ)
 end
-function interp!(::UniformZ, t, p, tꜜ, tꜛ, pꜜ, pꜛ)
-    @. t = (tꜜ + tꜛ) / 2
-    @. p = uniform_z_p(t, tꜜ, tꜛ, pꜜ, pꜛ)
+function interp!(::UniformZ, p, T, pꜜ, Tꜜ, pꜛ, Tꜛ)
+    @. T = (Tꜜ + Tꜛ) / 2
+    @. p = uniform_z_p(T, pꜜ, Tꜜ, pꜛ, Tꜛ)
 end
-function interp!(::UniformP, t, p, tꜜ, tꜛ, pꜜ, pꜛ)
+function interp!(::UniformP, p, T, pꜜ, Tꜜ, pꜛ, Tꜛ)
     @. p = (pꜜ + pꜛ) / 2
-    @. t = tꜜ * (tꜛ / tꜜ)^(log(p / pꜜ) / log(pꜛ / pꜜ)) # assume that pꜜ != pꜛ
+    @. T = Tꜜ * (Tꜛ / Tꜜ)^(log(p / pꜜ) / log(pꜛ / pꜜ)) # assume that pꜜ != pꜛ
 end
-function interp!(::BestFit, t, p, tꜜ, tꜛ, pꜜ, pꜛ, z, zꜜ, zꜛ)
-    @. t = tꜜ + (tꜛ - tꜜ) * (z - zꜜ) / (zꜛ - zꜜ)
-    @. p = best_fit_p(t, tꜜ, tꜛ, pꜜ, pꜛ, z, zꜜ, zꜛ)
+function interp!(::BestFit, p, T, z, pꜜ, Tꜜ, zꜜ, pꜛ, Tꜛ, zꜛ)
+    @. T = Tꜜ + (Tꜛ - Tꜜ) * (z - zꜜ) / (zꜛ - zꜜ)
+    @. p = best_fit_p(T, z, pꜜ, Tꜜ, zꜜ, pꜛ, Tꜛ, zꜛ)
 end
 
-function extrap!(::ArithmeticMean, t, p, t⁺, t⁺⁺, p⁺, p⁺⁺, tₛ, params)
-    @. t = (3 * t⁺ - t⁺⁺) / 2
+function extrap!(::ArithmeticMean, p, T, p⁺, T⁺, p⁺⁺, T⁺⁺, Tₛ, params)
+    @. T = (3 * T⁺ - T⁺⁺) / 2
     @. p = (3 * p⁺ - p⁺⁺) / 2
 end
-function extrap!(::GeometricMean, t, p, t⁺, t⁺⁺, p⁺, p⁺⁺, tₛ, params)
-    @. t = sqrt(t⁺^3 / t⁺⁺)
+function extrap!(::GeometricMean, p, T, p⁺, T⁺, p⁺⁺, T⁺⁺, Tₛ, params)
+    @. T = sqrt(T⁺^3 / T⁺⁺)
     @. p = sqrt(p⁺^3 / p⁺⁺)
 end
-function extrap!(::UniformZ, t, p, t⁺, t⁺⁺, p⁺, p⁺⁺, tₛ, params)
-    @. t = (3 * t⁺ - t⁺⁺) / 2
-    @. p = uniform_z_p(t, t⁺, t⁺⁺, p⁺, p⁺⁺)
+function extrap!(::UniformZ, p, T, p⁺, T⁺, p⁺⁺, T⁺⁺, Tₛ, params)
+    @. T = (3 * T⁺ - T⁺⁺) / 2
+    @. p = uniform_z_p(T, p⁺, T⁺, p⁺⁺, T⁺⁺)
 end
-function extrap!(::UniformP, t, p, t⁺, t⁺⁺, p⁺, p⁺⁺, tₛ, params)
+function extrap!(::UniformP, p, T, p⁺, T⁺, p⁺⁺, T⁺⁺, Tₛ, params)
     @. p = (3 * p⁺ - p⁺⁺) / 2
-    @. t = t⁺ * (t⁺⁺ / t⁺)^(log(p / p⁺) / log(p⁺⁺ / p⁺)) # assume that p⁺ != p⁺⁺
+    @. T = T⁺ * (T⁺⁺ / T⁺)^(log(p / p⁺) / log(p⁺⁺ / p⁺)) # assume that p⁺ != p⁺⁺
 end
-function extrap!(::BestFit, t, p, t⁺, t⁺⁺, p⁺, p⁺⁺, tₛ, params, z, z⁺, z⁺⁺)
-    @. t = t⁺ + (t⁺⁺ - t⁺) * (z - z⁺) / (z⁺⁺ - z⁺)
-    @. p = best_fit_p(t, t⁺, t⁺⁺, p⁺, p⁺⁺, z, z⁺, z⁺⁺)
+function extrap!(::BestFit, p, T, z, p⁺, T⁺, z⁺, p⁺⁺, T⁺⁺, z⁺⁺, Tₛ, params)
+    @. T = T⁺ + (T⁺⁺ - T⁺) * (z - z⁺) / (z⁺⁺ - z⁺)
+    @. p = best_fit_p(T, z, p⁺, T⁺, z⁺, p⁺⁺, T⁺⁺, z⁺⁺)
 end
-function extrap!(::UseSurfaceTempAtBottom, p, t, p⁺, p⁺⁺, t⁺, t⁺⁺, tₛ, params)
+function extrap!(::UseSurfaceTempAtBottom, p, T, p⁺, T⁺, p⁺⁺, T⁺⁺, Tₛ, params)
     FT = eltype(p)
     cₚ = FT(Planet.cp_d(params))
     R = FT(Planet.R_d(params))
-    @. t = tₛ
-    @. p = p⁺ * (t / t⁺)^(cₚ / R)
+    @. T = Tₛ
+    @. p = p⁺ * (T / T⁺)^(cₚ / R)
 end
 function extrap!(
     ::HydrostaticBottom,
-    t,
     p,
-    t⁺,
-    t⁺⁺,
-    p⁺,
-    p⁺⁺,
-    tₛ,
-    params,
+    T,
     z,
+    p⁺,
+    T⁺,
     z⁺,
+    p⁺⁺,
+    T⁺⁺,
     z⁺⁺,
+    Tₛ,
+    params,
 )
     FT = eltype(p)
     g = FT(Planet.grav(params))
     cₚ = FT(Planet.cp_d(params))
     R = FT(Planet.R_d(params))
-    @. t = t⁺ + g / cₚ * (z⁺ - z)
-    @. p = p⁺ * (t / t⁺)^(cₚ / R)
+    @. T = T⁺ + g / cₚ * (z⁺ - z)
+    @. p = p⁺ * (T / T⁺)^(cₚ / R)
 end
 
 struct RRTMGPModel{R, I, B, L, P, S, V}
@@ -141,8 +263,8 @@ struct RRTMGPModel{R, I, B, L, P, S, V}
     interpolation::I
     bottom_extrapolation::B
     add_isothermal_boundary_layer::Bool
-    disable_lw::Bool
-    disable_sw::Bool
+    disable_longwave::Bool
+    disable_shortwave::Bool
     lookups::L
     params::P
     max_threads::Int
@@ -163,103 +285,143 @@ function Base.propertynames(model::RRTMGPModel, private::Bool = false)
     return private ? (names..., fieldnames(typeof(model))...) : names
 end
 
-# This sets array .= value, but it allows array to be to be a CuArray while
-# value is an Array (in which case broadcasting throws an error).
-# TODO: Should this be parallelized?
-set_array!(array, value::Real, symbol) = fill!(array, value)
-function set_array!(array, value::AbstractArray{<:Real}, symbol)
-    if ndims(array) == 2
-        if size(value) == size(array)
-            copyto!(array, value)
-        elseif size(value) == (size(array, 1),)
-            for col in eachcol(array)
-                copyto!(col, value)
-            end
-        elseif size(value) == (1, size(array, 2))
-            for (icol, col) in enumerate(eachcol(array))
-                fill!(col, value[1, icol])
-            end
-        else
-            error("expected $symbol to be an array of size $(size(array)), \
-                   ($(size(array, 1)),), or (1, $(size(array, 2))); received \
-                   an array of size $(size(value))")
-        end
-    else
-        if size(value) == size(array)
-            copyto!(array, value)
-        else
-            error("expected $symbol to be an array of size $(size(array)); \
-                   received an array of size $(size(value))")
-        end
-    end
-end
+"""
+    RRTMGPModel(params; kwargs...)
 
-function set_and_save!(
-    array,
-    name,
-    views,
-    domain_nlay,
-    extension_nlay,
-    dict = nothing,
-)
-    domain_symbol = Symbol(name)
-    extension_symbol = Symbol("extension_$name")
+A user-friendly interface for `RRTMGP.jl`. Stores an `RRTMGP.RTE.Solver`, along
+with all of the data required to use it. Provides easy access to `RRTMGP`'s
+inputs and outputs (e.g., `model.center_temperature` and `model.face_flux`).
 
-    if isnothing(dict)
-        domain_value = NaN
-    else
-        if !(domain_symbol in keys(dict))
-            throw(UndefKeywordError(domain_symbol))
-        end
-        domain_value = pop!(dict, domain_symbol)
-    end
+After constructing an `RRTMGPModel`, use it as follows:
+- update all the inputs that have changed since it was constructed; e.g.,
+  `model.center_temperature .= field2array(current_center_temperature_field)`
+- call `update_fluxes!(model)`
+- use the values of any fluxes of interest; e.g.,
+  `field2array(face_flux_field) .= model.face_flux`
 
-    if (
-        (startswith(name, "center_") || startswith(name, "face_")) &&
-        extension_nlay > 0
-    )
-        if isnothing(dict)
-            extension_value = NaN
-        else
-            if !(extension_symbol in keys(dict))
-                if domain_value isa Real
-                    extension_value = domain_value
-                else
-                    throw(UndefKeywordError(extension_symbol))
-                end
-            end
-            extension_value = pop!(dict, extension_symbol)
-        end
+To construct the `RRTMGPModel`, one must specify `center_pressure` and
+`center_temperature`, or `face_pressure` and `face_temperature`, or all four
+values. If only the values at cell centers are specified, the values at cell
+faces are "implied values". Likewise, if only the values at faces are specified,
+the values at centers are "implied values".
 
-        if startswith(name, "center_")
-            domain_range = 1:domain_nlay
-            extension_range =
-                (domain_nlay + 1):(domain_nlay + extension_nlay)
-        else # startswith(name, "face_")
-            domain_range = 1:(domain_nlay + 1)
-            extension_range =
-                (domain_nlay + 2):(domain_nlay + extension_nlay + 1)
-        end
-        domain_view = view(array, domain_range, :)
-        extension_view = view(array, extension_range, :)
+If the keyword argument `extension_nlay` is not 0, then, for every keyword
+argument of the form `center_...`/`face_...`, one must also specify a
+corresponding keyword argument `extension_center_...`/`extension_face_...`.
 
-        set_array!(domain_view, domain_value, domain_symbol)
-        push!(views, (domain_symbol, domain_view))
-        set_array!(extension_view, extension_value, extension_symbol)
-        push!(views, (extension_symbol, extension_view))
-    else
-        set_array!(array, domain_value, domain_symbol)
-        push!(views, (domain_symbol, array))
-    end
-end
+Every keyword argument that corresponds to an array of cell center or cell face
+values can be specified as a scalar (corresponding to a constant value
+throughout the atmosphere), or as a 1D array (corresponding to the values in
+each column), or as a 2D array with a single row (corresponding to the values in
+each level), or as the full 2D array specifying the value at every point.
+Similarly, every keyword argument that corresponds to an array of values at the
+top/bottom of the atmosphere can be specified as a scalar, or as the full 1D
+array.
 
+# Keyword Arguments
+- `FT`: floating-point number type (performance with `Float32` is questionable)
+- `DA`: array type (defaults to `CuArray` when a compatible GPU is available)
+- `ncol`: number of vertical columns in the domain/extension
+- `domain_nlay`: number of cells (layers) in the domain
+- `extension_nlay`: number of cells (layers) in the extension
+- `radiation_mode`: overall mode for running `RRTMGP`; available options are
+    - `GrayRadiation`: uniform absorption across all frequencies
+    - `ClearSkyRadiation`: full RRTMGP model, but without clouds
+    - `AllSkyRadiation`: full RRTMGP model
+    - `AllSkyRadiationWithClearSkyDiagnostics`: computes the fluxes for both
+      `AllSkyRadiation` and `ClearSkyRadiation`
+- `interpolation`: method for determining implied values (if there are any);
+  see documentation for `AbstractInterpolation` for available options
+- `bottom_extrapolation`: method for determining implied values at the bottom
+  cell face (only used when the cell face values are implied); see documentation
+  for `AbstractInterpolation` for available options
+- `disable_longwave`: whether to ignore longwave fluxes
+- `disable_shortwave`: whether to ignore shortwave fluxes
+- `use_one_scalar_mode`: whether to use the one-scalar method for computing
+  optical properties instead of the default two-stream method
+- `use_pade_cloud_optics_mode`: whether to use PADE interpolation for computing
+  cloud optical properties instead of the default LUT interpolation
+- `use_global_means_for_well_mixed_gases`: whether to use a scalar value to
+  represent the volume mixing ratio of each well-mixed gas (i.e., a gas that is
+  not water vapor or ozone), instead of using an array that represents a
+  spatially varying volume mixing ratio
+- `add_isothermal_boundary_layer`: whether to add an isothermal boundary layer
+  above the domain and extension (the pressure at the top of this layer is
+  the minimum pressure supported by RRTMGP, while the temperature and volume
+  mixing ratios in this layer are the same as in the layer below it)
+- `max_threads`: the maximum number of GPU threads to use for `update_fluxes!`
+- `center_pressure` and/or `face_pressure`: air pressure in Pa on cell centers
+  and on cell faces (either one or both of these must be specified)
+- `center_temperature` and/or `face_temperature`: air temperature in K on cell
+  centers and on cell faces (if `center_pressure` is specified, then
+  `center_temperature` must also be specified, and, if `face_pressure` is
+  specified, then `face_temperature` must also be specified)
+- `surface_temperature`: temperature of the surface in K (required)
+- arguments only available when `radiation_mode isa GrayRadiation`:
+    - `lapse_rate`: a scalar value that specifies the lapse rate throughout the
+      atmosphere (required); this is a constant that can't be modified after the
+      model is constructed
+    - `optical_thickness_parameter`: the longwave optical depth at the surface
+      (required)
+- arguments only available when `!(radiation_mode isa GrayRadiation)`:
+    - `latitude`: latitude in degrees (assumed to be 45 by default); used for
+      computing the concentration of air in molecules/cm^2
+    - `center_volume_mixing_ratio_h2o`: volume mixing ratio of water vapor on
+      cell centers (required)
+    - `center_volume_mixing_ratio_o3`: volume mixing ratio of ozone on cell
+      centers (required)
+    - arguments only available when `use_global_means_for_well_mixed_gases`:
+        - `volume_mixing_ratio_<gas_name>` for `gas_name` in `co2`, `n2o`, `co`,
+          `ch4`, `o2`, `n2`, `ccl4`, `cfc11`, `cfc12`, `cfc22`, `hfc143a`,
+          `hfc125`, `hfc23`, `hfc32`, `hfc134a`, `cf4`, `no2`: a scalar value
+          that specifies the volume mixing ratio of each well-mixed gas
+          throughout the atmosphere (required)
+    - arguments only available when `!use_global_means_for_well_mixed_gases`:
+        - `center_volume_mixing_ratio_<gas_name>` for `gas_name` in `co2`,
+          `n2o`, `co`,`ch4`, `o2`, `n2`, `ccl4`, `cfc11`, `cfc12`, `cfc22`,
+          `hfc143a`, `hfc125`, `hfc23`, `hfc32`, `hfc134a`, `cf4`, `no2`: volume
+          mixing ratio of each well-mixed gas on cell centers (required)
+    - arguments only available when `!(radiation_mode isa ClearSkyRadiation)`:
+        - `center_cloud_liquid_effective_radius`: effective radius of cloud
+        liquid water in m on cell centers (required)
+        - `center_cloud_ice_effective_radius`: effective radius of cloud ice
+        water in m on cell centers (required)
+        - `center_cloud_liquid_water_path`: mean path length of cloud liquid
+        water in m on cell centers (required)
+        - `center_cloud_ice_water_path`: mean path length of cloud ice water in
+        m on cell centers (required)
+        - `center_cloud_boolean_mask`: a boolean at every cell center that
+        indicates whether there is a cloud at that location (required)
+        - `ice_roughness`: either 1, 2, or 3, with 3 corresponding to the
+        roughest ice (required); this is a constant that can't be modified after
+        the model is constructed
+- arguments only available when `!disable_longwave`:
+    - `surface_emissivity`: longwave emissivity of the surface (required)
+    - `top_of_atmosphere_lw_flux_dn`: incoming longwave radiation in W/m^2
+      (assumed to be 0 by default)
+- arguments only available when `!disable_shortwave`:
+    - `solar_zenith_angle`: zenith angle of sun in radians (required)
+    - `weighted_irradiance`: irradiance of sun in W/m^2 (required); the incoming
+      direct shortwave radiation is given by
+      `model.weighted_irradiance .* cos.(model.solar_zenith_angle)`
+    - `direct_sw_surface_albedo`: direct shortwave albedo of the surface
+      (required)
+    - `diffuse_sw_surface_albedo`: diffuse shortwave albedo of the surface
+      (required)
+    - `top_of_atmosphere_diffuse_sw_flux_dn`: incoming diffuse shortwave
+      radiation in W/m^2 (assumed to be 0 by default)
+- arguments only available when
+  `requires_z(interpolation) || requires_z(bottom_extrapolation)`:
+    - `center_z`: z-coordinate in m at cell centers
+    - `face_z`: z-coordinate in m at cell faces
+"""
 function RRTMGPModel(
     params::AbstractEarthParameterSet;
+    FT::Type{<:AbstractFloat} = Float64,
+    DA::Type{<:AbstractArray} = RRTMGP.Device.array_type(),
     ncol::Int,
     domain_nlay::Int,
     extension_nlay::Int = 0,
-    FT::Type{<:AbstractFloat} = Float64,
-    DA::Type{<:AbstractArray} = RRTMGP.Device.array_type(),
     radiation_mode::AbstractRadiationMode = ClearSkyRadiation(),
     interpolation::AbstractInterpolation = NoInterpolation(),
     bottom_extrapolation::AbstractBottomExtrapolation = SameAsInterpolation(),
@@ -267,7 +429,7 @@ function RRTMGPModel(
     disable_shortwave::Bool = false,
     use_one_scalar_mode::Bool = false,
     use_pade_cloud_optics_mode::Bool = false,
-    use_global_means_for_trace_gases::Bool = false,
+    use_global_means_for_well_mixed_gases::Bool = false,
     add_isothermal_boundary_layer::Bool = false,
     max_threads::Int = 256,
     kwargs...,
@@ -289,8 +451,8 @@ function RRTMGPModel(
         @warn "use_pade_cloud_optics_mode is ignored when using GrayRadiation \
                or ClearSkyRadiation"
     end
-    if use_global_means_for_trace_gases && radiation_mode isa GrayRadiation
-        @warn "use_global_means_for_trace_gases is ignored when using \
+    if use_global_means_for_well_mixed_gases && radiation_mode isa GrayRadiation
+        @warn "use_global_means_for_well_mixed_gases is ignored when using \
                GrayRadiation"
     end
 
@@ -384,7 +546,7 @@ function RRTMGPModel(
         set_and_save!(flux_lw2.flux_up, "face_lw_flux_up", t...)
         set_and_save!(flux_lw2.flux_dn, "face_lw_flux_dn", t...)
         set_and_save!(flux_lw2.flux_net, "face_lw_flux", t...)
-        if radiation_mode isa FullRadiationWithClearSkyDiagnostics
+        if radiation_mode isa AllSkyRadiationWithClearSkyDiagnostics
             flux_lw2 = RRTMGP.Fluxes.FluxLW(ncol, nlay, FT, DA)
             set_and_save!(flux_lw2.flux_up, "face_clear_lw_flux_up", t...)
             set_and_save!(flux_lw2.flux_dn, "face_clear_lw_flux_dn", t...)
@@ -442,7 +604,7 @@ function RRTMGPModel(
         set_and_save!(flux_sw.flux_dn, "face_sw_flux_dn", t...)
         set_and_save!(flux_sw.flux_dn_dir, "face_sw_direct_flux_dn", t...)
         set_and_save!(flux_sw.flux_net, "face_sw_flux", t...)
-        if radiation_mode isa FullRadiationWithClearSkyDiagnostics
+        if radiation_mode isa AllSkyRadiationWithClearSkyDiagnostics
             flux_sw2 = RRTMGP.Fluxes.FluxSW(ncol, nlay, FT, DA)
             set_and_save!(flux_sw2.flux_up, "face_clear_sw_flux_up", t...)
             set_and_save!(flux_sw2.flux_dn, "face_clear_sw_flux_dn", t...)
@@ -482,17 +644,17 @@ function RRTMGPModel(
 
     if disable_longwave
         set_and_save!(flux_sw.flux_net, "face_flux", t...)
-        if radiation_mode isa FullRadiationWithClearSkyDiagnostics
+        if radiation_mode isa AllSkyRadiationWithClearSkyDiagnostics
             set_and_save!(flux_sw2.flux_net, "face_clear_flux", t...)
         end
     elseif disable_shortwave
         set_and_save!(flux_lw.flux_net, "face_flux", t...)
-        if radiation_mode isa FullRadiationWithClearSkyDiagnostics
+        if radiation_mode isa AllSkyRadiationWithClearSkyDiagnostics
             set_and_save!(flux_lw2.flux_net, "face_clear_flux", t...)
         end
     else
         set_and_save!(similar(flux_lw.flux_net), "face_flux", t...)
-        if radiation_mode isa FullRadiationWithClearSkyDiagnostics
+        if radiation_mode isa AllSkyRadiationWithClearSkyDiagnostics
             set_and_save!(similar(flux_lw2.flux_net), "face_clear_flux", t...)
         end
         if !(radiation_mode isa GrayRadiation)
@@ -557,9 +719,9 @@ function RRTMGPModel(
             keys(idx_gases),
         )
         # TODO: This gives the wrong types for CUDA 3.4 and above.
-        # gm = use_global_means_for_trace_gases
+        # gm = use_global_means_for_well_mixed_gases
         # vmr = RRTMGP.Vmrs.init_vmr(ngas, nlay, ncol, FT, DA; gm)
-        if use_global_means_for_trace_gases
+        if use_global_means_for_well_mixed_gases
             vmr = RRTMGP.Vmrs.VmrGM(
                 DA{FT}(undef, nlay, ncol),
                 DA{FT}(undef, nlay, ncol),
@@ -666,14 +828,135 @@ function RRTMGPModel(
         interpolation,
         bottom_extrapolation,
         add_isothermal_boundary_layer,
-        disable_lw,
-        disable_sw,
+        disable_longwave,
+        disable_shortwave,
         lookups,
         params,
         max_threads,
         solver,
         NamedTuple(views),
     )
+end
+
+# This sets `array .= value`, but it allows `array` to be to be a `CuArray`
+# while `value` is an `Array` (in which case broadcasting throws an error).
+set_array!(array, value::Real, symbol) = fill!(array, value)
+function set_array!(array, value::AbstractArray{<:Real}, symbol)
+    if ndims(array) == 2
+        if size(value) == size(array)
+            copyto!(array, value)
+        elseif size(value) == (size(array, 1),)
+            for col in eachcol(array)
+                copyto!(col, value)
+            end
+        elseif size(value) == (1, size(array, 2))
+            for (icol, col) in enumerate(eachcol(array))
+                fill!(col, value[1, icol])
+            end
+        else
+            error("expected $symbol to be an array of size $(size(array)), \
+                   ($(size(array, 1)),), or (1, $(size(array, 2))); received \
+                   an array of size $(size(value))")
+        end
+    else
+        if size(value) == size(array)
+            copyto!(array, value)
+        else
+            error("expected $symbol to be an array of size $(size(array)); \
+                   received an array of size $(size(value))")
+        end
+    end
+end
+
+function set_and_save!(
+    array,
+    name,
+    views,
+    domain_nlay,
+    extension_nlay,
+    dict = nothing,
+)
+    domain_symbol = Symbol(name)
+    extension_symbol = Symbol("extension_$name")
+
+    if isnothing(dict)
+        domain_value = NaN
+    else
+        if !(domain_symbol in keys(dict))
+            throw(UndefKeywordError(domain_symbol))
+        end
+        domain_value = pop!(dict, domain_symbol)
+    end
+
+    if (
+        (startswith(name, "center_") || startswith(name, "face_")) &&
+        extension_nlay > 0
+    )
+        if isnothing(dict)
+            extension_value = NaN
+        else
+            if !(extension_symbol in keys(dict))
+                if domain_value isa Real
+                    extension_value = domain_value
+                else
+                    throw(UndefKeywordError(extension_symbol))
+                end
+            end
+            extension_value = pop!(dict, extension_symbol)
+        end
+
+        if startswith(name, "center_")
+            domain_range = 1:domain_nlay
+            extension_range =
+                (domain_nlay + 1):(domain_nlay + extension_nlay)
+        else # startswith(name, "face_")
+            domain_range = 1:(domain_nlay + 1)
+            extension_range =
+                (domain_nlay + 2):(domain_nlay + extension_nlay + 1)
+        end
+        domain_view = view(array, domain_range, :)
+        extension_view = view(array, extension_range, :)
+
+        set_array!(domain_view, domain_value, domain_symbol)
+        push!(views, (domain_symbol, domain_view))
+        set_array!(extension_view, extension_value, extension_symbol)
+        push!(views, (extension_symbol, extension_view))
+    else
+        set_array!(array, domain_value, domain_symbol)
+        push!(views, (domain_symbol, array))
+    end
+end
+
+"""
+    update_fluxes!(model)
+
+Updates the fluxes in the `RRTMGPModel` based on its internal state. Returns the
+net flux at cell faces in the domain, `model.face_flux`. The full set of fluxes
+available in the model after calling this function is
+- `face_flux`
+- `face_lw_flux`, `face_lw_flux_dn`, `face_lw_flux_up` (if `!disable_longwave`)
+- `face_sw_flux`, `face_sw_flux_dn`, `face_sw_flux_up`, `face_sw_direct_flux_dn`
+  (if `!disable_shortwave`)
+If `radiation_mode isa AllSkyRadiationWithClearSkyDiagnostics`, the set of
+available fluxes also includes
+- `face_clear_flux`
+- `face_clear_lw_flux`, `face_clear_lw_flux_dn`, `face_clear_lw_flux_up` (if
+  `!disable_longwave`)
+- `face_clear_sw_flux`, `face_clear_sw_flux_dn`, `face_clear_sw_flux_up`,
+  `face_clear_sw_direct_flux_dn` (if `!disable_shortwave`)
+If `extension_nlay > 0`, the set of available fluxes also includes all of the
+aforementioned values prefixed by `extension_`, corresponding to the values at
+cell faces in the extension.
+"""
+function update_fluxes!(model)
+    model.implied_values != :none && update_implied_values!(model)
+    model.add_isothermal_boundary_layer && update_boundary_layer!(model)
+    update_concentrations!(model.radiation_mode, model)
+    !model.disable_longwave && update_lw_fluxes!(model.radiation_mode, model)
+    !model.disable_shortwave && update_sw_fluxes!(model.radiation_mode, model)
+    !(model.disable_longwave || model.disable_shortwave) &&
+        update_net_fluxes!(model.radiation_mode, model)
+    return model.face_flux
 end
 
 get_p_min(model) = get_p_min(model.solver.as, model.lookups)
@@ -683,95 +966,42 @@ get_p_min(as::RRTMGP.AtmosphericStates.AtmosphericState, lookups) =
     lookups[1].p_ref_min
 
 function update_implied_values!(model)
-    (; p_lay, p_lev, t_lay, t_lev) = model.solver.as
+    (; p_lay, p_lev, t_lay, t_lev, t_sfc) = model.solver.as
+    nlay = size(p_lay, 1) - Int(model.add_isothermal_boundary_layer)
     if requires_z(model.interpolation) || requires_z(model.bottom_extrapolation)
         z_lay = parent(model.center_z)
         z_lev = parent(model.face_z)
     end
-    nlay = size(p_lay, 1) - Int(model.add_isothermal_boundary_layer)
     if !(:center_pressure in propertynames(model))
-        if requires_z(model.interpolation)
-            z_args = (
-                view(z_lay, 1:nlay, :),
-                view(z_lev, 1:nlay, :),
-                view(z_lev, 2:(nlay + 1), :),
-            )
-        else
-            z_args = ()
-        end
-        interp!(
-            model.interpolation,
-            view(t_lay, 1:nlay, :),
-            view(p_lay, 1:nlay, :),
-            view(t_lev, 1:nlay, :),
-            view(t_lev, 2:(nlay + 1), :),
-            view(p_lev, 1:nlay, :),
-            view(p_lev, 2:(nlay + 1), :),
-            z_args...,
-        )
-    elseif !(:face_pressure in propertynames(model))
-        if requires_z(model.interpolation)
-            z_args = (
-                view(z_lev, 2:nlay, :),
-                view(z_lay, 1:(nlay - 1), :),
-                view(z_lay, 2:nlay, :),
-            )
-        else
-            z_args = ()
-        end
-        interp!(
-            model.interpolation,
-            view(t_lev, 2:nlay, :),
-            view(p_lev, 2:nlay, :),
-            view(t_lay, 1:(nlay - 1), :),
-            view(t_lay, 2:nlay, :),
-            view(p_lay, 1:(nlay - 1), :),
-            view(p_lay, 2:nlay, :),
-            z_args...,
-        )
-        if requires_z(model.interpolation)
-            z_args = (
-                view(z_lev, nlay + 1, :),
-                view(z_lay, nlay, :),
-                view(z_lay, nlay - 1, :),
-            )
-        else
-            z_args = ()
-        end
-        extrap!(
-            model.interpolation,
-            view(t_lev, nlay + 1, :),
-            view(p_lev, nlay + 1, :),
-            view(t_lay, nlay, :),
-            view(t_lay, nlay - 1, :),
-            view(p_lay, nlay, :),
-            view(p_lay, nlay - 1, :),
-            model.solver.as.t_sfc,
-            model.params,
-            z_args...,
-        )
-        bottom_extrapolation =
-            model.bottom_extrapolation isa SameAsInterpolation ?
+        mode = model.interpolation
+        outs = requires_z(mode) ? (p_lay, t_lay) : (p_lay, t_lay, z_lay)
+        ins = requires_z(mode) ? (p_lev, t_lev) : (p_lev, t_lev, z_lev)
+        update_views(interp!, mode, outs, ins, (), 1:nlay, 1:nlay, 2:(nlay + 1))
+    else # !(:face_pressure in propertynames(model))
+        mode = model.interpolation
+        outs = requires_z(mode) ? (p_lev, t_lev) : (p_lev, t_lev, z_lev)
+        ins = requires_z(mode) ? (p_lay, t_lay) : (p_lay, t_lay, z_lay)
+        update_views(interp!, mode, outs, ins, (), 2:nlay, 1:(nlay - 1), 2:nlay)
+        others = (t_sfc, model.params)
+        update_views(extrap!, mode, outs, ins, others, nlay + 1, nlay, nlay - 1)
+        mode = model.bottom_extrapolation isa SameAsInterpolation ?
             model.interpolation : model.bottom_extrapolation
-        if requires_z(bottom_extrapolation)
-            z_args = (view(z_lev, 1, :), view(z_lay, 1, :), view(z_lay, 2, :))
-        else
-            z_args = ()
-        end
-        extrap!(
-            bottom_extrapolation,
-            view(t_lev, 1, :),
-            view(p_lev, 1, :),
-            view(t_lay, 1, :),
-            view(t_lay, 2, :),
-            view(p_lay, 1, :),
-            view(p_lay, 2, :),
-            model.solver.as.t_sfc,
-            model.params,
-            z_args...,
-        )
+        outs = requires_z(mode) ? (p_lev, t_lev) : (p_lev, t_lev, z_lev)
+        ins = requires_z(mode) ? (p_lay, t_lay) : (p_lay, t_lay, z_lay)
+        update_views(extrap!, mode, outs, ins, others, 1, 1, 2)
     end
+    p_min = get_p_min(model)
+    @. p_lay = max(p_lay, p_min)
+    @. p_lev = max(p_lev, p_min)
 end
+update_views(f, mode, outs, ins, others, out_range, in_range1, in_range2) =
+    f(
+        mode,
+        map(out -> view(out, out_range, :), outs)...,
+        map(in -> view(in, in_range1, :), ins)...,
+        map(in -> view(in, in_range2, :), ins)...,
+        others...,
+    )
 
 function update_boundary_layer!(model)
     as = model.solver.as
@@ -814,14 +1044,14 @@ update_lw_fluxes!(::ClearSkyRadiation, model) =
         model.max_threads,
         model.lookups.lookup_lw,
     )
-update_lw_fluxes!(::FullRadiation, model) =
+update_lw_fluxes!(::AllSkyRadiation, model) =
     RRTMGP.RTESolver.solve_lw!(
         model.solver,
         model.max_threads,
         model.lookups.lookup_lw,
         model.lookups.lookup_lw_cld,
     )
-function update_lw_fluxes!(::FullRadiationWithClearSkyDiagnostics, model)
+function update_lw_fluxes!(::AllSkyRadiationWithClearSkyDiagnostics, model)
     RRTMGP.RTESolver.solve_lw!(
         model.solver,
         model.max_threads,
@@ -846,14 +1076,14 @@ update_sw_fluxes!(::ClearSkyRadiation, model) =
         model.max_threads,
         model.lookups.lookup_sw,
     )
-update_sw_fluxes!(::FullRadiation, model) =
+update_sw_fluxes!(::AllSkyRadiation, model) =
     RRTMGP.RTESolver.solve_sw!(
         model.solver,
         model.max_threads,
         model.lookups.lookup_sw,
         model.lookups.lookup_sw_cld,
     )
-function update_sw_fluxes!(::FullRadiationWithClearSkyDiagnostics, model)
+function update_sw_fluxes!(::AllSkyRadiationWithClearSkyDiagnostics, model)
     RRTMGP.RTESolver.solve_sw!(
         model.solver,
         model.max_threads,
@@ -875,39 +1105,22 @@ end
 update_net_flux!(radiation_mode, model) =
     parent(model.face_flux) .=
         parent(model.face_lw_flux) .+ parent(model.face_sw_flux)
-function update_net_flux!(::FullRadiationWithClearSkyDiagnostics, model)
+function update_net_flux!(::AllSkyRadiationWithClearSkyDiagnostics, model)
     parent(model.face_clear_flux) .=
         parent(model.face_clear_lw_flux) .+ parent(model.face_clear_sw_flux)
     parent(model.face_flux) .=
         parent(model.face_lw_flux) .+ parent(model.face_sw_flux)
 end
 
-function update_fluxes!(model)
-    model.implied_values != :none && update_implied_values!(model)
-    model.add_isothermal_boundary_layer && update_boundary_layer!(model)
-
-    p_min = get_p_min(model)
-    @. model.solver.as.p_lay = max(model.solver.as.p_lay, p_min)
-    @. model.solver.as.p_lev = max(model.solver.as.p_lev, p_min)
-
-    update_concentrations!(model.radiation_mode, model)
-    !model.disable_lw && update_lw_fluxes!(model.radiation_mode, model)
-    !model.disable_sw && update_sw_fluxes!(model.radiation_mode, model)
-    !(model.disable_lw || model.disable_sw) &&
-        update_net_fluxes!(model.radiation_mode, model)
-    return model.face_flux
-end
-
 # Overriding the definition of optical depth for GrayRadiation.
 function τ_lw_gray(p, pꜜ, pꜛ, p₀, τ₀)
     FT = eltype(p)
     f = FT(0.2)
-    α = 1
-    return α * τ₀ * (f / p₀ + 4 * (1 - f) / p₀ * (p / p₀)^3) * (pꜜ - pꜛ)
+    return τ₀ * (f / p₀ + 4 * (1 - f) / p₀ * (p / p₀)^3) * (pꜜ - pꜛ)
 end
 τ_sw_gray(p, pꜜ, pꜛ, p₀, τ₀) = 2 * τ₀ * (p / p₀) / p₀ * (pꜜ - pꜛ)
 # Note: the original value for both of these functions was
-#     abs(α * τ₀ * (p / p₀)^α / p * (p⁺ - pꜜ)),
+#     abs(α * τ₀ * (p / p₀)^α / p * (pꜛ - pꜜ)),
 # where α is the lapse rate and τ₀ is the optical thickness parameter.
 
 import RRTMGP.Optics: compute_optical_props_kernel!
@@ -951,7 +1164,7 @@ function compute_optical_props_kernel!(
         p_lev[glay, gcol],
         p_lev[glay + 1, gcol],
         p_lev[1, gcol],
-        FT(0.22),
+        FT(0.22), # hardcode the value of τ₀ for shortwave gray radiation
     )
     if op isa RRTMGP.Optics.TwoStream
         op.ssa[glaycol...] = FT(0)
