@@ -64,6 +64,7 @@ function rrtmgp_model_tendency!(Yₜ, Y, p, t)
     (; ᶜT, ᶜvmr_h2o, insolation_tuple, zenith_angle, weighted_irradiance) = p
     (; ᶠradiation_flux, rrtmgp_model) = p
 
+    date_time = DateTime(2022) + Second(round(Int, t)) # t secs into 2022
     max_zenith_angle = FT(π) / 2 - eps(FT)
     irradiance = FT(Planet.tot_solar_irrad(params))
     au = FT(astro_unit())
@@ -71,8 +72,8 @@ function rrtmgp_model_tendency!(Yₜ, Y, p, t)
     @. ᶜT = TD.air_temperature(ᶜts)
     @. ᶜvmr_h2o = TD.vol_vapor_mixing_ratio(params, TD.PhasePartition(ᶜts))
     bottom_coords = Fields.coordinate_field(Spaces.level(Y.c, 1))
-    insolation_tuple .= instantaneous_zenith_angle.(
-        DateTime(2022) + Second(round(Int, t)), # t secs after start of 2022
+    @. insolation_tuple = instantaneous_zenith_angle(
+        date_time,
         bottom_coords.long,
         bottom_coords.lat,
         params,
