@@ -1,7 +1,7 @@
 include("cli_options.jl")
 
 const FT = parsed_args["FLOAT_TYPE"] == "Float64" ? Float64 : Float32
-TEST_NAME = parsed_args["TEST_NAME"]
+TEST_NAME = "sphere/baroclinic_wave_rhoe_radiation" # parsed_args["TEST_NAME"]
 
 
 # Test-specific definitions (may be overwritten in each test case file)
@@ -220,7 +220,7 @@ integrator = OrdinaryDiffEq.init(
     dt = dt,
     adaptive = false,
     progress = show_progress_bar,
-    progress_steps = 1000,
+    progress_steps = 1,
     additional_solver_kwargs...,
 )
 

@@ -4,49 +4,73 @@ using CLIMAParameters: AbstractEarthParameterSet, Planet, astro_unit
 
 include("../rrtmgp_model.jl")
 
-function radiation_cache(Y, params)
+function rrtmgp_model_cache(
+    Y,
+    params;
+    radiation_mode = ClearSkyRadiation(),
+    interpolation = ArithmeticMean(),
+    bottom_extrapolation = SameAsInterpolation(),
+)
+    lat = Fields.coordinate_field(Spaces.level(Y.c, 1)).lat
     input_data = rrtmgp_artifact("atmos_state", "clearsky_as.nc")
+    if radiation_mode isa GrayRadiation
+        kwargs = (;
+            lapse_rate = 3.5,
+            optical_thickness_parameter = field2array(
+                @. ((300 + 60 * (FT(1 / 3) - sin(lat)^2)) / FT(200))^4 - 1
+            ),
+        )
+    elseif mode isa ClearSkyRadiation
+        kwargs = (;
+            use_global_means_for_well_mixed_gases = true,
+            center_volume_mixing_ratio_h2o = NaN, # initialize in tendency
+            center_volume_mixing_ratio_o3 = mean(input_data["ozone"]),
+            volume_mixing_ratio_co2 = mean(input_data["carbon_dioxide_GM"]),
+            volume_mixing_ratio_n2o = mean(input_data["nitrous_oxide_GM"]),
+            volume_mixing_ratio_co = mean(input_data["carbon_monoxide_GM"]),
+            volume_mixing_ratio_ch4 = mean(input_data["methane_GM"]),
+            volume_mixing_ratio_o2 = mean(input_data["oxygen_GM"]),
+            volume_mixing_ratio_n2 = mean(input_data["nitrogen_GM"]),
+            volume_mixing_ratio_ccl4 =
+                mean(input_data["carbon_tetrachloride_GM"]),
+            volume_mixing_ratio_cfc11 = mean(input_data["cfc11_GM"]),
+            volume_mixing_ratio_cfc12 = mean(input_data["cfc12_GM"]),
+            volume_mixing_ratio_cfc22 = mean(input_data["hcfc22_GM"]),
+            volume_mixing_ratio_hfc143a = mean(input_data["hfc143a_GM"]),
+            volume_mixing_ratio_hfc125 = mean(input_data["hfc125_GM"]),
+            volume_mixing_ratio_hfc23 = mean(input_data["hfc23_GM"]),
+            volume_mixing_ratio_hfc32 = mean(input_data["hfc32_GM"]),
+            volume_mixing_ratio_hfc134a = mean(input_data["hfc134a_GM"]),
+            volume_mixing_ratio_cf4 = mean(input_data["cf4_GM"]),
+            volume_mixing_ratio_no2 = 0, # not available in input_data
+            latitude = field2array(lat),
+        )
+    end
+    if requires_z(interpolation) || requires_z(bottom_extrapolation)
+        kwargs = (;
+            kwargs...,
+            center_z = field2array(Fields.coordinate_field(Y.c).z),
+            face_z = field2array(Fields.coordinate_field(Y.f).z),
+        )
+    end
     rrtmgp_model = RRTMGPModel(
         params;
         FT = Float64,
         ncol = length(Spaces.all_nodes(axes(Spaces.level(Y.c, 1)))),
         domain_nlay = Spaces.nlevels(axes(Y.c)),
-        radiation_mode = ClearSkyRadiation(),
-        interpolation = ArithmeticMean(),
-        bottom_extrapolation = SameAsInterpolation(),
-        use_global_means_for_well_mixed_gases = true,
+        radiation_mode,
+        interpolation,
+        bottom_extrapolation,
         add_isothermal_boundary_layer = true,
-        center_pressure = NaN, # initialize in tendency
-        center_temperature = NaN, # initialize in tendency
+        center_pressure = NaN, # initialized in tendency
+        center_temperature = NaN, # initialized in tendency
         surface_temperature = 280,
         surface_emissivity = mean(input_data["surface_emissivity"]),
         direct_sw_surface_albedo = mean(input_data["surface_albedo"]),
         diffuse_sw_surface_albedo = mean(input_data["surface_albedo"]),
-        solar_zenith_angle = NaN, # initialize in tendency
-        weighted_irradiance = NaN, # initialize in tendency
-        center_volume_mixing_ratio_h2o = NaN, # initialize in tendency
-        center_volume_mixing_ratio_o3 = mean(input_data["ozone"]),
-        volume_mixing_ratio_co2 = mean(input_data["carbon_dioxide_GM"]),
-        volume_mixing_ratio_n2o = mean(input_data["nitrous_oxide_GM"]),
-        volume_mixing_ratio_co = mean(input_data["carbon_monoxide_GM"]),
-        volume_mixing_ratio_ch4 = mean(input_data["methane_GM"]),
-        volume_mixing_ratio_o2 = mean(input_data["oxygen_GM"]),
-        volume_mixing_ratio_n2 = mean(input_data["nitrogen_GM"]),
-        volume_mixing_ratio_ccl4 = mean(input_data["carbon_tetrachloride_GM"]),
-        volume_mixing_ratio_cfc11 = mean(input_data["cfc11_GM"]),
-        volume_mixing_ratio_cfc12 = mean(input_data["cfc12_GM"]),
-        volume_mixing_ratio_cfc22 = mean(input_data["hcfc22_GM"]),
-        volume_mixing_ratio_hfc143a = mean(input_data["hfc143a_GM"]),
-        volume_mixing_ratio_hfc125 = mean(input_data["hfc125_GM"]),
-        volume_mixing_ratio_hfc23 = mean(input_data["hfc23_GM"]),
-        volume_mixing_ratio_hfc32 = mean(input_data["hfc32_GM"]),
-        volume_mixing_ratio_hfc134a = mean(input_data["hfc134a_GM"]),
-        volume_mixing_ratio_cf4 = mean(input_data["cf4_GM"]),
-        volume_mixing_ratio_no2 = 0, # not available in input_data
-        latitude =
-            field2array(Fields.coordinate_field(Spaces.level(Y.c, 1)).lat),
-        # center_z = field2array(Fields.coordinate_field(Y.c).z),
-        # face_z = field2array(Fields.coordinate_field(Y.f).z),
+        solar_zenith_angle = NaN, # initialized in tendency
+        weighted_irradiance = NaN, # initialized in tendency
+        kwargs...,
     )
     close(input_data)
     return (;
@@ -83,7 +107,9 @@ function rrtmgp_model_tendency!(Yₜ, Y, p, t)
 
     rrtmgp_model.center_pressure .= field2array(ᶜp)
     rrtmgp_model.center_temperature .= field2array(ᶜT)
-    rrtmgp_model.center_volume_mixing_ratio_h2o .= field2array(ᶜvmr_h2o)
+    if !(rrtmgp_model.radiation_mode isa GrayRadiation)
+        rrtmgp_model.center_volume_mixing_ratio_h2o .= field2array(ᶜvmr_h2o)
+    end
     rrtmgp_model.solar_zenith_angle .= field2array(zenith_angle)
     rrtmgp_model.weighted_irradiance .= field2array(weighted_irradiance)
     update_fluxes!(rrtmgp_model)

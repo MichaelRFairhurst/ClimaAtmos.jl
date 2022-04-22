@@ -1,4 +1,3 @@
-using Statistics: mean
 using ClimaCorePlots, Plots
 using ClimaCore.DataLayouts
 
@@ -20,22 +19,16 @@ jacobian_flags = (; ∂ᶜ𝔼ₜ∂ᶠ𝕄_mode = :no_∂ᶜp∂ᶜK, ∂ᶠ�
 additional_cache(Y, params, dt) = merge(
     hyperdiffusion_cache(Y; κ₄ = FT(2e17)),
     sponge ? rayleigh_sponge_cache(Y, dt) : NamedTuple(),
-    zero_moment_microphysics_cache(Y),
-    radiation_cache(Y, params),
+    rrtmgp_model_cache(Y, params; radiation_mode = GrayRadiation()),
 )
 function additional_tendency!(Yₜ, Y, p, t)
     hyperdiffusion_tendency!(Yₜ, Y, p, t)
     sponge && rayleigh_sponge_tendency!(Yₜ, Y, p, t)
-    zero_moment_microphysics_tendency!(Yₜ, Y, p, t)
     rrtmgp_model_tendency!(Yₜ, Y, p, t)
 end
 
-center_initial_condition(local_geometry, params) = center_initial_condition(
-    local_geometry,
-    params,
-    Val(:ρe);
-    moisture_mode = Val(:equil),
-)
+center_initial_condition(local_geometry, params) =
+    center_initial_condition(local_geometry, params, Val(:ρe))
 
 function postprocessing(sol, output_dir)
     @info "L₂ norm of ρe at t = $(sol.t[1]): $(norm(sol.u[1].c.ρe))"
