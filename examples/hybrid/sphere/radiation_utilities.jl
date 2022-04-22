@@ -12,6 +12,7 @@ function rrtmgp_model_cache(
     radiation_mode = ClearSkyRadiation(),
     interpolation = BestFit(),
     bottom_extrapolation = SameAsInterpolation(),
+    idealized_insolation = true,
 )
     latitude = field2array(Fields.coordinate_field(Spaces.level(Y.c, 1)).lat)
     input_data = rrtmgp_artifact("atmos_state", "clearsky_as.nc")
@@ -78,6 +79,7 @@ function rrtmgp_model_cache(
             error("rrtmgp_model_cache not yet implemented for $radiation_mode")
         end
     end
+
     if requires_z(interpolation) || requires_z(bottom_extrapolation)
         kwargs = (;
             kwargs...,
@@ -85,6 +87,17 @@ function rrtmgp_model_cache(
             face_z = field2array(Fields.coordinate_field(Y.f).z),
         )
     end
+
+    if idealized_insolation
+        # perpetual equinox with no diurnal cycle
+        solar_zenith_angle = FT(π) / 3
+        weighted_irradiance =
+            @. 1360 * (4 + FT(1.2) * (1 - 3 * sind(latitude)^2)) /
+            (4 * cos(solar_zenith_angle))
+    else
+        solar_zenith_angle = weighted_irradiance = NaN # initialized in tendency
+    end
+
     # surface_emissivity and surface_albedo are provided for each of 100 sites,
     # which we average across
     rrtmgp_model = RRTMGPModel(
@@ -98,12 +111,12 @@ function rrtmgp_model_cache(
         add_isothermal_boundary_layer = true,
         center_pressure = NaN, # initialized in tendency
         center_temperature = NaN, # initialized in tendency
-        surface_temperature = 280,
+        surface_temperature = (@. 29 * exp(-(latitude / 26)^2 / 2) + 271),
         surface_emissivity = mean(input_data["surface_emissivity"]),
         direct_sw_surface_albedo = mean(input_data["surface_albedo"]),
         diffuse_sw_surface_albedo = mean(input_data["surface_albedo"]),
-        solar_zenith_angle = NaN, # initialized in tendency
-        weighted_irradiance = NaN, # initialized in tendency
+        solar_zenith_angle,
+        weighted_irradiance,
         kwargs...,
     )
     close(input_data)
@@ -114,6 +127,7 @@ function rrtmgp_model_cache(
         zenith_angle = similar(Spaces.level(Y.c, 1), FT),
         weighted_irradiance = similar(Spaces.level(Y.c, 1), FT),
         ᶠradiation_flux = similar(Y.f, Geometry.WVector{FT}),
+        idealized_insolation,
         rrtmgp_model,
     )
 end
@@ -135,12 +149,7 @@ function rrtmgp_model_callback!(integrator)
 
     (; ᶜK, ᶜΦ, ᶜts, ᶜp, params) = p
     (; ᶜT, ᶜvmr_h2o, insolation_tuple, zenith_angle, weighted_irradiance) = p
-    (; ᶠradiation_flux, rrtmgp_model) = p
-
-    date_time = DateTime(2022) + Second(round(Int, t)) # t secs into 2022
-    max_zenith_angle = FT(π) / 2 - eps(FT)
-    irradiance = FT(Planet.tot_solar_irrad(params))
-    au = FT(astro_unit())
+    (; ᶠradiation_flux, idealized_insolation, rrtmgp_model) = p
 
     if :ρθ in propertynames(Y.c)
         @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
@@ -150,28 +159,35 @@ function rrtmgp_model_callback!(integrator)
     elseif :ρe_int in propertynames(Y.c)
         @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
     end
+
     @. ᶜp = TD.air_pressure(ᶜts)
-
     @. ᶜT = TD.air_temperature(ᶜts)
-    @. ᶜvmr_h2o = TD.vol_vapor_mixing_ratio(params, TD.PhasePartition(ᶜts))
-    bottom_coords = Fields.coordinate_field(Spaces.level(Y.c, 1))
-    @. insolation_tuple = instantaneous_zenith_angle(
-        date_time,
-        bottom_coords.long,
-        bottom_coords.lat,
-        params,
-    ) # each tuple contains (zenith angle, azimuthal angle, earth-sun distance)
-    @. zenith_angle = min(first(insolation_tuple), max_zenith_angle)
-    # @. weighted_irradiance = irradiance * (au / last(insolation_tuple))^2
-    weighted_irradiance .= 0
-
     rrtmgp_model.center_pressure .= field2array(ᶜp)
     rrtmgp_model.center_temperature .= field2array(ᶜT)
+
     if !(rrtmgp_model.radiation_mode isa GrayRadiation)
+        @. ᶜvmr_h2o = TD.vol_vapor_mixing_ratio(params, TD.PhasePartition(ᶜts))
         rrtmgp_model.center_volume_mixing_ratio_h2o .= field2array(ᶜvmr_h2o)
     end
-    rrtmgp_model.solar_zenith_angle .= field2array(zenith_angle)
-    rrtmgp_model.weighted_irradiance .= field2array(weighted_irradiance)
+
+    if !idealized_insolation
+        date_time = DateTime(2022) + Second(round(Int, t)) # t secs into 2022
+        max_zenith_angle = FT(π) / 2 - eps(FT)
+        irradiance = FT(Planet.tot_solar_irrad(params))
+        au = FT(astro_unit())
+    
+        bottom_coords = Fields.coordinate_field(Spaces.level(Y.c, 1))
+        @. insolation_tuple = instantaneous_zenith_angle(
+            date_time,
+            bottom_coords.long,
+            bottom_coords.lat,
+            params,
+        ) # each tuple is (zenith angle, azimuthal angle, earth-sun distance)
+        @. zenith_angle = min(first(insolation_tuple), max_zenith_angle)
+        @. weighted_irradiance = irradiance * (au / last(insolation_tuple))^2
+        rrtmgp_model.solar_zenith_angle .= field2array(zenith_angle)
+        rrtmgp_model.weighted_irradiance .= field2array(weighted_irradiance)
+    end
 
     update_fluxes!(rrtmgp_model)
     field2array(ᶠradiation_flux) .= rrtmgp_model.face_flux
