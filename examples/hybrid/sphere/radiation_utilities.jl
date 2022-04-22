@@ -19,7 +19,7 @@ function rrtmgp_model_cache(
         kwargs = (;
             lapse_rate = 3.5,
             optical_thickness_parameter =
-                (@. ((300 + 60 * (FT(1 / 3) - sin(latitude)^2)) / 200)^4 - 1),
+                (@. ((300 + 60 * (FT(1 / 3) - sind(latitude)^2)) / 200)^4 - 1),
         )
     else
         # the pressure and ozone concentrations are provided for each of 100
