@@ -1,3 +1,4 @@
+using Statistics: mean
 using Dates: Second, DateTime
 using Insolation: instantaneous_zenith_angle
 using CLIMAParameters: AbstractEarthParameterSet, Planet, astro_unit
@@ -8,7 +9,7 @@ function rrtmgp_model_cache(
     Y,
     params;
     radiation_mode = ClearSkyRadiation(),
-    interpolation = ArithmeticMean(),
+    interpolation = BestFit(),
     bottom_extrapolation = SameAsInterpolation(),
 )
     lat = Fields.coordinate_field(Spaces.level(Y.c, 1)).lat
@@ -79,12 +80,27 @@ function rrtmgp_model_cache(
         insolation_tuple = similar(Spaces.level(Y.c, 1), Tuple{FT, FT, FT}),
         zenith_angle = similar(Spaces.level(Y.c, 1), FT),
         weighted_irradiance = similar(Spaces.level(Y.c, 1), FT),
-        ᶠradiation_flux = similar(Y.f, FT),
+        ᶠradiation_flux = similar(Y.f, Geometry.WVector{FT}),
         rrtmgp_model,
     )
 end
 function rrtmgp_model_tendency!(Yₜ, Y, p, t)
-    (; ᶜts, ᶜp, params) = p # assume ᶜts and ᶜp have been updated
+    (; ᶠradiation_flux) = p
+    ᶜdivᵥ = Operators.DivergenceF2C()
+    if :ρθ in propertynames(Y.c)
+        error("rrtmgp_model_tendency! not implemented for ρθ")
+    elseif :ρe in propertynames(Y.c)
+        @. Yₜ.c.ρe -= ᶜdivᵥ(ᶠradiation_flux)
+    elseif :ρe_int in propertynames(Y.c)
+        @. Yₜ.c.ρe_int -= ᶜdivᵥ(ᶠradiation_flux)
+    end
+end
+function rrtmgp_model_callback!(integrator)
+    Y = integrator.u
+    p = integrator.p
+    t = integrator.t
+
+    (; ᶜK, ᶜΦ, ᶜts, ᶜp, params) = p
     (; ᶜT, ᶜvmr_h2o, insolation_tuple, zenith_angle, weighted_irradiance) = p
     (; ᶠradiation_flux, rrtmgp_model) = p
 
@@ -92,6 +108,16 @@ function rrtmgp_model_tendency!(Yₜ, Y, p, t)
     max_zenith_angle = FT(π) / 2 - eps(FT)
     irradiance = FT(Planet.tot_solar_irrad(params))
     au = FT(astro_unit())
+
+    if :ρθ in propertynames(Y.c)
+        @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+    elseif :ρe in propertynames(Y.c)
+        @. ᶜK = norm_sqr(C123(Y.c.uₕ) + C123(ᶜinterp(Y.f.w))) / 2
+        @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
+    elseif :ρe_int in propertynames(Y.c)
+        @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
+    end
+    @. ᶜp = TD.air_pressure(ᶜts)
 
     @. ᶜT = TD.air_temperature(ᶜts)
     @. ᶜvmr_h2o = TD.vol_vapor_mixing_ratio(params, TD.PhasePartition(ᶜts))
@@ -103,7 +129,8 @@ function rrtmgp_model_tendency!(Yₜ, Y, p, t)
         params,
     ) # each tuple contains (zenith angle, azimuthal angle, earth-sun distance)
     @. zenith_angle = min(first(insolation_tuple), max_zenith_angle)
-    @. weighted_irradiance = irradiance * (au / last(insolation_tuple))^2
+    # @. weighted_irradiance = irradiance * (au / last(insolation_tuple))^2
+    weighted_irradiance .= 0
 
     rrtmgp_model.center_pressure .= field2array(ᶜp)
     rrtmgp_model.center_temperature .= field2array(ᶜT)
@@ -112,14 +139,7 @@ function rrtmgp_model_tendency!(Yₜ, Y, p, t)
     end
     rrtmgp_model.solar_zenith_angle .= field2array(zenith_angle)
     rrtmgp_model.weighted_irradiance .= field2array(weighted_irradiance)
-    update_fluxes!(rrtmgp_model)
 
-    field2array(ᶠradiation_flux) .= rrtmgp_model.face_flux
-    if :ρe in propertynames(Y.c)
-        @. Yₜ.c.ρe -= ᶜdivᵥ(Geometry.WVector(ᶠradiation_flux))
-    elseif :ρe_int in propertynames(Y.c)
-        @. Yₜ.c.ρe_int -= ᶜdivᵥ(Geometry.WVector(ᶠradiation_flux))
-    elseif :ρθ in propertynames(Y.c)
-        error("rrtmgp_model_tendency! not implemented for ρθ")
-    end
+    update_fluxes!(rrtmgp_model)
+    field2array(ᶠradiation_flux.components.data.:1) .= rrtmgp_model.face_flux
 end

@@ -26,6 +26,9 @@ function additional_tendency!(Yₜ, Y, p, t)
     sponge && rayleigh_sponge_tendency!(Yₜ, Y, p, t)
     rrtmgp_model_tendency!(Yₜ, Y, p, t)
 end
+additional_callbacks = (
+    PeriodicCallback(rrtmgp_model_callback!, FT(3600); initial_affect = true),
+)
 
 center_initial_condition(local_geometry, params) =
     center_initial_condition(local_geometry, params, Val(:ρe))
