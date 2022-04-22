@@ -1,4 +1,5 @@
 using Statistics: mean
+using Dierckx: Spline1D
 using Dates: Second, DateTime
 using Insolation: instantaneous_zenith_angle
 using CLIMAParameters: AbstractEarthParameterSet, Planet, astro_unit
@@ -12,40 +13,70 @@ function rrtmgp_model_cache(
     interpolation = BestFit(),
     bottom_extrapolation = SameAsInterpolation(),
 )
-    lat = Fields.coordinate_field(Spaces.level(Y.c, 1)).lat
+    latitude = field2array(Fields.coordinate_field(Spaces.level(Y.c, 1)).lat)
     input_data = rrtmgp_artifact("atmos_state", "clearsky_as.nc")
     if radiation_mode isa GrayRadiation
         kwargs = (;
             lapse_rate = 3.5,
-            optical_thickness_parameter = field2array(
-                @. ((300 + 60 * (FT(1 / 3) - sin(lat)^2)) / FT(200))^4 - 1
-            ),
+            optical_thickness_parameter =
+                (@. ((300 + 60 * (FT(1 / 3) - sin(latitude)^2)) / 200)^4 - 1),
         )
-    elseif mode isa ClearSkyRadiation
+    else
+        # the pressure and ozone concentrations are provided for each of 100
+        # sites, which we average across
+        n = input_data.dim["layer"]
+        input_center_pressure =
+            vec(mean(reshape(input_data["pres_layer"][:, :], n, :); dims = 2))
+        # the first values along the third dimension of the ozone concentration
+        # data are the present-day values
+        input_center_volume_mixing_ratio_o3 =
+            vec(mean(reshape(input_data["ozone"][:, :, 1], n, :); dims = 2))
+
+        # interpolate the ozone concentrations to our initial pressures (set the
+        # kinetic energy to 0 when computing the pressure using total energy)
+        pressure2ozone =
+            Spline1D(input_center_pressure, input_center_volume_mixing_ratio_o3)
+        if :ρθ in propertynames(Y.c)
+            ᶜts = @. thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+        elseif :ρe in propertynames(Y.c)
+            ᶜΦ = FT(Planet.grav(params)) .* Fields.coordinate_field(Y.c).z
+            ᶜts = @. thermo_state_ρe(Y.c.ρe, Y.c, 0, ᶜΦ, params)
+        elseif :ρe_int in propertynames(Y.c)
+            ᶜts = @. thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
+        end
+        ᶜp = @. TD.air_pressure(ᶜts)
+        center_volume_mixing_ratio_o3 = field2array(@. FT(pressure2ozone(ᶜp)))
+
+        # the first value for each global mean volume mixing ratio is the
+        # present-day value
+        input_vmr(name) =
+            input_data[name][1] * parse(FT, input_data[name].attrib["units"])
         kwargs = (;
             use_global_means_for_well_mixed_gases = true,
             center_volume_mixing_ratio_h2o = NaN, # initialize in tendency
-            center_volume_mixing_ratio_o3 = mean(input_data["ozone"]),
-            volume_mixing_ratio_co2 = mean(input_data["carbon_dioxide_GM"]),
-            volume_mixing_ratio_n2o = mean(input_data["nitrous_oxide_GM"]),
-            volume_mixing_ratio_co = mean(input_data["carbon_monoxide_GM"]),
-            volume_mixing_ratio_ch4 = mean(input_data["methane_GM"]),
-            volume_mixing_ratio_o2 = mean(input_data["oxygen_GM"]),
-            volume_mixing_ratio_n2 = mean(input_data["nitrogen_GM"]),
-            volume_mixing_ratio_ccl4 =
-                mean(input_data["carbon_tetrachloride_GM"]),
-            volume_mixing_ratio_cfc11 = mean(input_data["cfc11_GM"]),
-            volume_mixing_ratio_cfc12 = mean(input_data["cfc12_GM"]),
-            volume_mixing_ratio_cfc22 = mean(input_data["hcfc22_GM"]),
-            volume_mixing_ratio_hfc143a = mean(input_data["hfc143a_GM"]),
-            volume_mixing_ratio_hfc125 = mean(input_data["hfc125_GM"]),
-            volume_mixing_ratio_hfc23 = mean(input_data["hfc23_GM"]),
-            volume_mixing_ratio_hfc32 = mean(input_data["hfc32_GM"]),
-            volume_mixing_ratio_hfc134a = mean(input_data["hfc134a_GM"]),
-            volume_mixing_ratio_cf4 = mean(input_data["cf4_GM"]),
-            volume_mixing_ratio_no2 = 0, # not available in input_data
-            latitude = field2array(lat),
+            center_volume_mixing_ratio_o3,
+            volume_mixing_ratio_co2 = input_vmr("carbon_dioxide_GM"),
+            volume_mixing_ratio_n2o = input_vmr("nitrous_oxide_GM"),
+            volume_mixing_ratio_co = input_vmr("carbon_monoxide_GM"),
+            volume_mixing_ratio_ch4 = input_vmr("methane_GM"),
+            volume_mixing_ratio_o2 = input_vmr("oxygen_GM"),
+            volume_mixing_ratio_n2 = input_vmr("nitrogen_GM"),
+            volume_mixing_ratio_ccl4 = input_vmr("carbon_tetrachloride_GM"),
+            volume_mixing_ratio_cfc11 = input_vmr("cfc11_GM"),
+            volume_mixing_ratio_cfc12 = input_vmr("cfc12_GM"),
+            volume_mixing_ratio_cfc22 = input_vmr("hcfc22_GM"),
+            volume_mixing_ratio_hfc143a = input_vmr("hfc143a_GM"),
+            volume_mixing_ratio_hfc125 = input_vmr("hfc125_GM"),
+            volume_mixing_ratio_hfc23 = input_vmr("hfc23_GM"),
+            volume_mixing_ratio_hfc32 = input_vmr("hfc32_GM"),
+            volume_mixing_ratio_hfc134a = input_vmr("hfc134a_GM"),
+            volume_mixing_ratio_cf4 = input_vmr("cf4_GM"),
+            volume_mixing_ratio_no2 = 1e-8, # not available in input_data
+            latitude,
         )
+        if !(radiation_mode isa ClearSkyRadiation)
+            error("rrtmgp_model_cache not yet implemented for $radiation_mode")
+        end
     end
     if requires_z(interpolation) || requires_z(bottom_extrapolation)
         kwargs = (;
@@ -54,6 +85,8 @@ function rrtmgp_model_cache(
             face_z = field2array(Fields.coordinate_field(Y.f).z),
         )
     end
+    # surface_emissivity and surface_albedo are provided for each of 100 sites,
+    # which we average across
     rrtmgp_model = RRTMGPModel(
         params;
         FT = Float64,
@@ -141,5 +174,5 @@ function rrtmgp_model_callback!(integrator)
     rrtmgp_model.weighted_irradiance .= field2array(weighted_irradiance)
 
     update_fluxes!(rrtmgp_model)
-    field2array(ᶠradiation_flux.components.data.:1) .= rrtmgp_model.face_flux
+    field2array(ᶠradiation_flux) .= rrtmgp_model.face_flux
 end

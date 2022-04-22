@@ -15,9 +15,10 @@ simplify the process of getting and setting values in an `RRTMGPModel`; e.g.
 ```
 """
 function field2array(field::Fields.Field)
-    if eltype(field) != eltype(parent(field)) # if size along F-axis is not 1
-        error("field2array only works when the element type of the Field is \
-               also the base type of the underlying array")
+    if sizeof(eltype(field)) != sizeof(eltype(parent(field)))
+        f_axis_size = sizeof(eltype(parent(field))) ÷ sizeof(eltype(field))
+        error("unable to use field2array because each Field element is \
+               represented by $f_axis_size array elements (must be 1)")
     end
     return data2array(Fields.field_values(field))
 end

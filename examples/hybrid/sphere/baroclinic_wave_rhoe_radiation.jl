@@ -19,7 +19,7 @@ jacobian_flags = (; ∂ᶜ𝔼ₜ∂ᶠ𝕄_mode = :no_∂ᶜp∂ᶜK, ∂ᶠ�
 additional_cache(Y, params, dt) = merge(
     hyperdiffusion_cache(Y; κ₄ = FT(2e17)),
     sponge ? rayleigh_sponge_cache(Y, dt) : NamedTuple(),
-    rrtmgp_model_cache(Y, params; radiation_mode = GrayRadiation()),
+    rrtmgp_model_cache(Y, params),
 )
 function additional_tendency!(Yₜ, Y, p, t)
     hyperdiffusion_tendency!(Yₜ, Y, p, t)
