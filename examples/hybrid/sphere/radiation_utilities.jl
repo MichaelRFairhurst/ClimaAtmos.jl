@@ -92,7 +92,7 @@ function rrtmgp_model_cache(
         # perpetual equinox with no diurnal cycle
         solar_zenith_angle = FT(π) / 3
         weighted_irradiance =
-            @. 1360 * (4 + FT(1.2) * (1 - 3 * sind(latitude)^2)) /
+            @. 1360 * (1 + FT(1.2) / 4 * (1 - 3 * sind(latitude)^2)) /
             (4 * cos(solar_zenith_angle))
     else
         solar_zenith_angle = weighted_irradiance = NaN # initialized in tendency
