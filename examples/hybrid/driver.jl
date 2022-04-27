@@ -3,6 +3,14 @@ include("cli_options.jl")
 const FT = parsed_args["FLOAT_TYPE"] == "Float64" ? Float64 : Float32
 TEST_NAME = parsed_args["TEST_NAME"]
 
+using OrdinaryDiffEq
+using DiffEqCallbacks
+using JLD2
+using ClimaCorePlots, Plots
+using ClimaCore.DataLayouts
+using NCDatasets
+using ClimaCoreTempestRemap
+using ClimaCore
 
 # Test-specific definitions (may be overwritten in each test case file)
 # TODO: Allow some of these to be environment variables or command line arguments
@@ -60,7 +68,6 @@ end
 atexit() do
     global_logger(prev_logger)
 end
-
 using OrdinaryDiffEq
 using DiffEqCallbacks
 using JLD2
@@ -69,8 +76,20 @@ include("../implicit_solver_debugging_tools.jl")
 include("../ordinary_diff_eq_bug_fixes.jl")
 include("../common_spaces.jl")
 
-test_dir, test_file_name = split(TEST_NAME, '/')
-include(joinpath(test_dir, "$test_file_name.jl"))
+include(joinpath("sphere", "baroclinic_wave_utilities.jl"))
+
+const sponge = false
+
+# Variables required for driver.jl (modify as needed)
+params = BaroclinicWaveParameterSet()
+horizontal_mesh = baroclinic_wave_mesh(; params, h_elem = 4)
+npoly = 4
+z_max = FT(30e3)
+z_elem = 10
+dt_save_to_disk = FT(0) # 0 means don't save to disk
+ode_algorithm = OrdinaryDiffEq.Rosenbrock23
+
+include(joinpath("sphere", "$TEST_NAME.jl"))
 
 import ClimaCore: enable_threading
 enable_threading() = parsed_args["enable_threading"]
@@ -145,23 +164,29 @@ output_dir = if isnothing(parsed_args["output_dir"])
 else
     parsed_args["output_dir"]
 end
-@info "Output directory: $output_dir"
+@info "Output directory: `$output_dir`"
 mkpath(output_dir)
 
-function make_save_to_disk_func(output_dir, test_file_name, is_distributed)
+function make_dss_func(comms_ctx)
+    _dss!(x::Fields.Field) = Spaces.weighted_dss!(x, comms_ctx)
+    _dss!(::Any) = nothing
+    dss_func(Y, t, integrator) = foreach(_dss!, Fields._values(Y))
+    return dss_func
+end
+function make_save_to_disk_func(output_dir, is_distributed)
     function save_to_disk_func(integrator)
         day = floor(Int, integrator.t / (60 * 60 * 24))
         @info "Saving prognostic variables to JLD2 file on day $day"
         suffix = is_distributed ? "_pid$pid.jld2" : ".jld2"
-        output_file = joinpath(output_dir, "$(test_file_name)_day$day$suffix")
+        output_file = joinpath(output_dir, "day$day$suffix")
         jldsave(output_file; t = integrator.t, Y = integrator.u)
         return nothing
     end
     return save_to_disk_func
 end
 
-save_to_disk_func =
-    make_save_to_disk_func(output_dir, test_file_name, is_distributed)
+dss_func = make_dss_func(comms_ctx)
+save_to_disk_func = make_save_to_disk_func(output_dir, is_distributed)
 
 dss_callback = FunctionCallingCallback(func_start = true) do Y, t, integrator
     p = integrator.p
@@ -207,7 +232,7 @@ if haskey(ENV, "CI_PERF_SKIP_RUN") # for performance analysis
     throw(:exit_profile)
 end
 
-@info "Running `$test_dir/$test_file_name` test case"
+@info "Running job:`$job_id`"
 sol = @timev OrdinaryDiffEq.solve!(integrator)
 
 if is_distributed # replace sol.u on the root processor with the global sol.u
@@ -249,11 +274,13 @@ end
 import JSON
 using Test
 import OrderedCollections
+include(joinpath(@__DIR__, "define_post_processing.jl"))
 if !is_distributed
     ENV["GKSwstype"] = "nul" # avoid displaying plots
-    if TEST_NAME == "sphere/baroclinic_wave_rhoe" ||
-       TEST_NAME == "sphere/baroclinic_wave_rhotheta"
-        paperplots(sol, output_dir, p, FT(90), FT(180))
+    if TEST_NAME == "baroclinic_wave_rhoe"
+        paperplots_baro_wave_ρe(sol, output_dir, p, FT(90), FT(180))
+    elseif TEST_NAME == "baroclinic_wave_rhotheta"
+        paperplots_baro_wave_ρθ(sol, output_dir, p, FT(90), FT(180))
     else
         postprocessing(sol, output_dir)
     end
@@ -270,10 +297,6 @@ if !is_distributed || ClimaComms.iamroot(comms_ctx)
         println("all_best_mse[$job_id] = OrderedCollections.OrderedDict()")
         for prop_chain in Fields.property_chains(Y_last)
             println("all_best_mse[$job_id][$prop_chain] = 0.0")
-        end
-        @info "Solution variables:"
-        for prop_chain in Fields.property_chains(Y_last)
-            println(prop_chain)
         end
 
         # Extract best mse for this job:

@@ -13,6 +13,10 @@ Planet.grav(::BaroclinicWaveParameterSet) = 9.80616
 Planet.Omega(::BaroclinicWaveParameterSet) = 7.29212e-5
 Planet.planet_radius(::BaroclinicWaveParameterSet) = 6.371229e6
 
+# parameters for 0-Moment Microphysics
+Atmos.Microphysics_0M.τ_precip(::BaroclinicWaveParameterSet) = dt # timescale for precipitation removal
+Atmos.Microphysics_0M.qc_0(::BaroclinicWaveParameterSet) = 5e-6 # criterion for removal after supersaturation
+
 baroclinic_wave_mesh(; params, h_elem) =
     cubed_sphere_mesh(; radius = FT(Planet.planet_radius(params)), h_elem)
 
@@ -117,14 +121,14 @@ function center_initial_condition(
 
     # Initial values computed from the thermodynamic state
     ts = TD.PhaseEquil_pTq(params, p, T, q_tot)
-    ρ = TD.air_density(ts)
+    ρ = TD.air_density(params, ts)
     if ᶜ𝔼_name === Val(:ρθ)
-        ᶜ𝔼_kwarg = (; ρθ = ρ * TD.liquid_ice_pottemp(ts))
+        ᶜ𝔼_kwarg = (; ρθ = ρ * TD.liquid_ice_pottemp(params, ts))
     elseif ᶜ𝔼_name === Val(:ρe)
         K = norm_sqr(uₕ_local) / 2
-        ᶜ𝔼_kwarg = (; ρe = ρ * (TD.internal_energy(ts) + K + grav * z))
+        ᶜ𝔼_kwarg = (; ρe = ρ * (TD.internal_energy(params, ts) + K + grav * z))
     elseif ᶜ𝔼_name === Val(:ρe_int)
-        ᶜ𝔼_kwarg = (; ρe_int = ρ * TD.internal_energy(ts))
+        ᶜ𝔼_kwarg = (; ρe_int = ρ * TD.internal_energy(params, ts))
     end
     if moisture_mode === Val(:dry)
         moisture_kwargs = NamedTuple()
@@ -133,8 +137,8 @@ function center_initial_condition(
     elseif moisture_mode === Val(:nonequil)
         moisture_kwargs = (;
             ρq_tot = ρ * q_tot,
-            ρq_liq = ρ * TD.liquid_specific_humidity(ts),
-            ρq_ice = ρ * TD.ice_specific_humidity(ts),
+            ρq_liq = ρ * TD.liquid_specific_humidity(params, ts),
+            ρq_ice = ρ * TD.ice_specific_humidity(params, ts),
         )
     end
     # TODO: Include ability to handle nonzero initial cloud condensate
@@ -232,29 +236,28 @@ zero_moment_microphysics_cache(Y) =
 function zero_moment_microphysics_tendency!(Yₜ, Y, p, t)
     (; ᶜts, ᶜΦ, ᶜS_ρq_tot, ᶜλ, params) = p # assume ᶜts has been updated
 
-    # _qc_0 - set it to 0 to remove immediately after supersat
-    # _τ_precip - make it super short to get behavior similar to instantaneous
-
     @. ᶜS_ρq_tot =
-        Y.c.ρ *
-        CM.Microphysics_0M.remove_precipitation(params, TD.PhasePartition(ᶜts))
+        Y.c.ρ * CM.Microphysics_0M.remove_precipitation(
+            params,
+            TD.PhasePartition(params, ᶜts),
+        )
     @. Yₜ.c.ρq_tot += ᶜS_ρq_tot
     @. Yₜ.c.ρ += ᶜS_ρq_tot
 
-    @. ᶜλ = TD.liquid_fraction(ᶜts)
+    @. ᶜλ = TD.liquid_fraction(params, ᶜts)
 
     if :ρe in propertynames(Y.c)
         @. Yₜ.c.ρe +=
             ᶜS_ρq_tot * (
-                ᶜλ * TD.internal_energy_liquid(ᶜts) +
-                (1 - ᶜλ) * TD.internal_energy_ice(ᶜts) +
+                ᶜλ * TD.internal_energy_liquid(params, ᶜts) +
+                (1 - ᶜλ) * TD.internal_energy_ice(params, ᶜts) +
                 ᶜΦ
             )
     elseif :ρe_int in propertynames(Y.c)
         @. Yₜ.c.ρe_int +=
             ᶜS_ρq_tot * (
-                ᶜλ * TD.internal_energy_liquid(ᶜts) +
-                (1 - ᶜλ) * TD.internal_energy_ice(ᶜts)
+                ᶜλ * TD.internal_energy_liquid(params, ᶜts) +
+                (1 - ᶜλ) * TD.internal_energy_ice(params, ᶜts)
             )
     end
 end
@@ -291,16 +294,16 @@ function vertical_diffusion_boundary_layer_cache(
         :ρq_ice in propertynames(Y.c) &&
         :ρq_tot in propertynames(Y.c)
     )
-        ts_type = TD.PhaseNonEquil{FT, typeof(params)}
+        ts_type = TD.PhaseNonEquil{FT}
     elseif :ρq_tot in propertynames(Y.c)
-        ts_type = TD.PhaseEquil{FT, typeof(params)}
+        ts_type = TD.PhaseEquil{FT}
     else
-        ts_type = TD.PhaseDry{FT, typeof(params)}
+        ts_type = TD.PhaseDry{FT}
     end
     coef_type = SF.Coefficients{
         FT,
         SF.InteriorValues{FT, Tuple{FT, FT}, ts_type},
-        SF.SurfaceValues{FT, Tuple{FT, FT}, TD.PhaseEquil{FT, typeof(params)}},
+        SF.SurfaceValues{FT, Tuple{FT, FT}, TD.PhaseEquil{FT}},
     }
 
     return (;
@@ -333,9 +336,11 @@ function constant_T_saturated_surface_coefs(
     params,
 )
     T_sfc = FT(280)
-    T_int = TD.air_temperature(ts_int)
-    Rm_int = TD.gas_constant_air(ts_int)
-    ρ_sfc = TD.air_density(ts_int) * (T_sfc / T_int)^(TD.cv_m(ts_int) / Rm_int)
+    T_int = TD.air_temperature(params, ts_int)
+    Rm_int = TD.gas_constant_air(params, ts_int)
+    ρ_sfc =
+        TD.air_density(params, ts_int) *
+        (T_sfc / T_int)^(TD.cv_m(params, ts_int) / Rm_int)
     q_sfc = TD.q_vap_saturation_generic(params, T_sfc, ρ_sfc, TD.Liquid())
     ts_sfc = TD.PhaseEquil_ρTq(params, ρ_sfc, T_sfc, q_sfc)
     return SF.Coefficients{FT}(;
@@ -354,10 +359,10 @@ function sensible_heat_flux_ρe_int(param_set, Ch, sc, scheme)
     cp_d::FT = Planet.cp_d(param_set)
     R_d::FT = Planet.R_d(param_set)
     T_0::FT = Planet.T_0(param_set)
-    cp_m = TD.cp_m(SF.ts_in(sc))
-    ρ_sfc = TD.air_density(SF.ts_sfc(sc))
-    T_in = TD.air_temperature(SF.ts_in(sc))
-    T_sfc = TD.air_temperature(SF.ts_sfc(sc))
+    cp_m = TD.cp_m(param_set, SF.ts_in(sc))
+    ρ_sfc = TD.air_density(param_set, SF.ts_sfc(sc))
+    T_in = TD.air_temperature(param_set, SF.ts_in(sc))
+    T_sfc = TD.air_temperature(param_set, SF.ts_sfc(sc))
     ΔT = T_in - T_sfc
     hd_sfc = cp_d * (T_sfc - T_0) + R_d * T_0
     E = SF.evaporation(sc, param_set, Ch)
@@ -388,27 +393,22 @@ function vertical_diffusion_boundary_layer_tendency!(Yₜ, Y, p, t)
         )
 
     if :ρe in propertynames(Y.c)
-        @. dif_flux_energy = Geometry.WVector(SF.sensible_heat_flux(
-            params,
-            Ch,
-            flux_coefficients,
-            nothing,
-        ))
+        @. dif_flux_energy = Geometry.WVector(
+            SF.sensible_heat_flux(params, Ch, flux_coefficients, nothing) +
+            SF.latent_heat_flux(params, Ch, flux_coefficients, nothing),
+        )
         ᶜdivᵥ = Operators.DivergenceF2C(
             top = Operators.SetValue(Geometry.WVector(FT(0))),
-            bottom = Operators.SetValue(mean(dif_flux_energy)),
+            bottom = Operators.SetValue(-mean(dif_flux_energy)),
         )
         @. Yₜ.c.ρe += ᶜdivᵥ(ᶠK_E * ᶠinterp(ᶜρ) * ᶠgradᵥ((Y.c.ρe + ᶜp) / ᶜρ))
     elseif :ρe_int in propertynames(Y.c)
-        @. dif_flux_energy = Geometry.WVector(sensible_heat_flux_ρe_int(
-            params,
-            Ch,
-            flux_coefficients,
-            nothing,
-        ))
+        @. dif_flux_energy = Geometry.WVector(
+            sensible_heat_flux_ρe_int(params, Ch, flux_coefficients, nothing) + SF.latent_heat_flux(params, Ch, flux_coefficients, nothing),
+        )
         ᶜdivᵥ = Operators.DivergenceF2C(
             top = Operators.SetValue(Geometry.WVector(FT(0))),
-            bottom = Operators.SetValue(mean(dif_flux_energy)),
+            bottom = Operators.SetValue(-mean(dif_flux_energy)),
         )
         @. Yₜ.c.ρe_int +=
             ᶜdivᵥ(ᶠK_E * ᶠinterp(ᶜρ) * ᶠgradᵥ((Y.c.ρe_int + ᶜp) / ᶜρ))
@@ -419,7 +419,7 @@ function vertical_diffusion_boundary_layer_tendency!(Yₜ, Y, p, t)
             Geometry.WVector(SF.evaporation(flux_coefficients, params, Ch))
         ᶜdivᵥ = Operators.DivergenceF2C(
             top = Operators.SetValue(Geometry.WVector(FT(0))),
-            bottom = Operators.SetValue(mean(dif_flux_ρq_tot)),
+            bottom = Operators.SetValue(-mean(dif_flux_ρq_tot)),
         )
         @. Yₜ.c.ρq_tot += ᶜdivᵥ(ᶠK_E * ᶠinterp(ᶜρ) * ᶠgradᵥ(Y.c.ρq_tot / ᶜρ))
     end

@@ -3,7 +3,7 @@ using LinearAlgebra: ×, norm, norm_sqr, dot
 using ClimaCore: Operators, Fields
 
 using Thermodynamics
-using CLIMAParameters: AbstractEarthParameterSet, Planet
+using CLIMAParameters: AbstractEarthParameterSet, Planet, Atmos
 
 const TD = Thermodynamics
 
@@ -114,11 +114,11 @@ function default_cache(Y, params)
         :ρq_ice in propertynames(Y.c) &&
         :ρq_tot in propertynames(Y.c)
     )
-        ts_type = TD.PhaseNonEquil{FT, typeof(params)}
+        ts_type = TD.PhaseNonEquil{FT}
     elseif :ρq_tot in propertynames(Y.c)
-        ts_type = TD.PhaseEquil{FT, typeof(params)}
+        ts_type = TD.PhaseEquil{FT}
     else
-        ts_type = TD.PhaseDry{FT, typeof(params)}
+        ts_type = TD.PhaseDry{FT}
     end
     return (;
         ᶜuvw = similar(Y.c, Geometry.Covariant123Vector{FT}),
@@ -146,8 +146,6 @@ function default_cache(Y, params)
     )
 end
 
-additional_cache(Y, params, dt) = ()
-
 is_tracer(name) = !(name in (:ρ, :ρθ, :ρe, :ρe_int, :uₕ, :w))
 
 function implicit_tendency!(Yₜ, Y, p, t)
@@ -172,19 +170,19 @@ function implicit_tendency!(Yₜ, Y, p, t)
 
     if :ρθ in propertynames(Y.c)
         @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
         @. Yₜ.c.ρθ =
             -(ᶜdivᵥ(ᶠinterp(Y.c.ρ) * ᶠupwind_product(ᶠw, Y.c.ρθ / Y.c.ρ)))
     elseif :ρe in propertynames(Y.c)
         @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
         @. Yₜ.c.ρe =
             -(ᶜdivᵥ(
                 ᶠinterp(Y.c.ρ) * ᶠupwind_product(ᶠw, (Y.c.ρe + ᶜp) / Y.c.ρ),
             ))
     elseif :ρe_int in propertynames(Y.c)
         @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
         @. Yₜ.c.ρe_int =
             -(
                 (ᶜdivᵥ(
@@ -249,17 +247,17 @@ function default_remaining_tendency!(Yₜ, Y, p, t)
 
     if :ρθ in propertynames(Y.c)
         @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
         @. Yₜ.c.ρθ -= divₕ(Y.c.ρθ * ᶜuvw)
         @. Yₜ.c.ρθ -= ᶜdivᵥ(ᶠinterp(Y.c.ρθ * ᶜuₕ))
     elseif :ρe in propertynames(Y.c)
         @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
         @. Yₜ.c.ρe -= divₕ((Y.c.ρe + ᶜp) * ᶜuvw)
         @. Yₜ.c.ρe -= ᶜdivᵥ(ᶠinterp((Y.c.ρe + ᶜp) * ᶜuₕ))
     elseif :ρe_int in propertynames(Y.c)
         @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
         if point_type <: Geometry.Abstract3DPoint
             @. Yₜ.c.ρe_int -=
                 divₕ((Y.c.ρe_int + ᶜp) * ᶜuvw) -
@@ -365,7 +363,7 @@ function Wfact!(W, Y, p, dtγ, t)
     if :ρθ in propertynames(Y.c)
         ᶜρθ = Y.c.ρθ
         @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
 
         if flags.∂ᶜ𝔼ₜ∂ᶠ𝕄_mode != :exact
             error("∂ᶜ𝔼ₜ∂ᶠ𝕄_mode must be :exact when using ρθ")
@@ -378,7 +376,7 @@ function Wfact!(W, Y, p, dtγ, t)
         ᶜρe = Y.c.ρe
         @. ᶜK = norm_sqr(C123(ᶜuₕ) + C123(ᶜinterp(ᶠw))) / 2
         @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
 
         if flags.∂ᶜ𝔼ₜ∂ᶠ𝕄_mode == :exact
             # ᶜρeₜ = -ᶜdivᵥ(ᶠinterp(ᶜρe + ᶜp) * ᶠw)
@@ -408,7 +406,7 @@ function Wfact!(W, Y, p, dtγ, t)
     elseif :ρe_int in propertynames(Y.c)
         ᶜρe_int = Y.c.ρe_int
         @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
-        @. ᶜp = TD.air_pressure(ᶜts)
+        @. ᶜp = TD.air_pressure(params, ᶜts)
 
         if flags.∂ᶜ𝔼ₜ∂ᶠ𝕄_mode != :exact
             error("∂ᶜ𝔼ₜ∂ᶠ𝕄_mode must be :exact when using ρe_int")
