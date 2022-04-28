@@ -45,7 +45,7 @@ function make_distributed_horizontal_space(mesh, quad, comms_ctx)
     if mesh isa Meshes.AbstractMesh1D
         error("Distributed mode does not work with 1D horizontal spaces.")
     elseif mesh isa Meshes.AbstractMesh2D
-        topology = Topologies.DistributedTopology2D(mesh, comms_ctx)
+        topology = Topologies.DistributedTopology2D(comms_ctx, mesh)
         space = Spaces.SpectralElementSpace2D(topology, quad)
     end
     return space

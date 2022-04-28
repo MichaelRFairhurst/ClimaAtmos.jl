@@ -66,6 +66,7 @@ if is_distributed
     @info "Setting up distributed run on $nprocs \
         processor$(nprocs == 1 ? "" : "s")"
 else
+    const comms_ctx = nothing
     using TerminalLoggers: TerminalLogger
     prev_logger = global_logger(TerminalLogger())
 end
