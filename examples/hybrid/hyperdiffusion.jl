@@ -18,17 +18,17 @@ function hyperdiffusion_tendency!(Yₜ, Y, p, t)
     ᶜρ = Y.c.ρ
     ᶜuₕ = Y.c.uₕ
     (; ᶜp, ᶜχ, ᶜχuₕ) = p # assume ᶜp has been updated
-    (; comms_ctx, κ₄, divergence_damping_factor, use_tempest_mode) = p
+    (; ghost_buffer, κ₄, divergence_damping_factor, use_tempest_mode) = p
     point_type = eltype(Fields.local_geometry_field(axes(Y.c)).coordinates)
 
     if use_tempest_mode
         @. ᶜχ = wdivₕ(gradₕ(ᶜρ)) # ᶜχρ
-        Spaces.weighted_dss!(ᶜχ, comms_ctx)
+        Spaces.weighted_dss!(ᶜχ, ghost_buffer.χ)
         @. Yₜ.c.ρ -= κ₄ * wdivₕ(gradₕ(ᶜχ))
 
         if :ρθ in propertynames(Y.c)
             @. ᶜχ = wdivₕ(gradₕ(Y.c.ρθ)) # ᶜχρθ
-            Spaces.weighted_dss!(ᶜχ, comms_ctx)
+            Spaces.weighted_dss!(ᶜχ, ghost_buffer.χ)
             @. Yₜ.c.ρθ -= κ₄ * wdivₕ(gradₕ(ᶜχ))
         else
             error("use_tempest_mode must be false when not using ρθ")
