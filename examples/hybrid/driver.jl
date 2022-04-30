@@ -31,6 +31,7 @@ horizontal_mesh = nothing # must be object of type AbstractMesh
 quad = nothing # must be object of type QuadratureStyle
 z_max = 0
 z_elem = 0
+z_stretch = nothing
 t_end = parse_arg(parsed_args, "t_end", FT(60 * 60 * 24 * 10))
 dt = parse_arg(parsed_args, "dt", FT(400))
 dt_save_to_sol = parsed_args["dt_save_to_sol"]
@@ -91,6 +92,7 @@ horizontal_mesh = baroclinic_wave_mesh(; params, h_elem = 4)
 quad = Spaces.Quadratures.GLL{5}()
 z_max = FT(30e3)
 z_elem = 10
+z_stretch = Meshes.Uniform()
 ode_algorithm = OrdinaryDiffEq.Rosenbrock23
 
 include(joinpath("sphere", "$TEST_NAME.jl"))
@@ -127,7 +129,8 @@ else
     else
         h_space = make_horizontal_space(horizontal_mesh, quad)
     end
-    center_space, face_space = make_hybrid_spaces(h_space, z_max, z_elem)
+    center_space, face_space =
+        make_hybrid_spaces(h_space, z_max, z_elem, z_stretch)
     ᶜlocal_geometry = Fields.local_geometry_field(center_space)
     ᶠlocal_geometry = Fields.local_geometry_field(face_space)
     Y = Fields.FieldVector(
@@ -176,9 +179,10 @@ end
 function make_save_to_disk_func(output_dir, is_distributed)
     function save_to_disk_func(integrator)
         day = floor(Int, integrator.t / (60 * 60 * 24))
-        @info "Saving prognostic variables to JLD2 file on day $day"
+        sec = Int(mod(integrator.t, 3600 * 24))
+        @info "Saving prognostic variables to JLD2 file on day $day second $sec"
         suffix = is_distributed ? "_pid$pid.jld2" : ".jld2"
-        output_file = joinpath(output_dir, "day$day$suffix")
+        output_file = joinpath(output_dir, "day$day.$sec$suffix")
         jldsave(output_file; t = integrator.t, Y = integrator.u)
         return nothing
     end
@@ -235,7 +239,7 @@ if is_distributed # replace sol.u on the root processor with the global sol.u
     if ClimaComms.iamroot(comms_ctx)
         global_h_space = make_horizontal_space(horizontal_mesh, quad)
         global_center_space, global_face_space =
-            make_hybrid_spaces(global_h_space, z_max, z_elem)
+            make_hybrid_spaces(global_h_space, z_max, z_elem, z_stretch)
         global_Y_c_type = Fields.Field{
             typeof(Fields.field_values(Y.c)),
             typeof(global_center_space),
@@ -279,6 +283,8 @@ if !is_distributed
         paperplots_baro_wave_ρθ(sol, output_dir, p, FT(90), FT(180))
     elseif TEST_NAME == "single_column_radiative_equilibrium"
         custom_postprocessing(sol, output_dir)
+    elseif TEST_NAME == "baroclinic_wave_rhoe_equilmoist"
+        paperplots_moist_baro_wave_ρe(sol, output_dir, p, FT(90), FT(180))
     else
         postprocessing(sol, output_dir)
     end
@@ -292,9 +298,9 @@ if !is_distributed || ClimaComms.iamroot(comms_ctx)
         Y_last = sol.u[end]
         # This is helpful for starting up new tables
         @info "Job-specific MSE table format:"
-        println("all_best_mse[$job_id] = OrderedCollections.OrderedDict()")
+        println("all_best_mse[\"$job_id\"] = OrderedCollections.OrderedDict()")
         for prop_chain in Fields.property_chains(Y_last)
-            println("all_best_mse[$job_id][$prop_chain] = 0.0")
+            println("all_best_mse[\"$job_id\"][$prop_chain] = 0.0")
         end
 
         # Extract best mse for this job:
@@ -320,8 +326,12 @@ if !is_distributed || ClimaComms.iamroot(comms_ctx)
         varname(pc::Tuple) = process_name(join(pc, "_"))
 
         export_nc(Y_last; nc_filename = ds_filename_computed, varname)
-        computed_mse =
-            regression_test(; job_id, best_mse, ds_filename_computed, varname)
+        computed_mse = regression_test(;
+            job_id,
+            reference_mse = best_mse,
+            ds_filename_computed,
+            varname,
+        )
 
         computed_mse_filename = joinpath(job_id, "computed_mse.json")
 
