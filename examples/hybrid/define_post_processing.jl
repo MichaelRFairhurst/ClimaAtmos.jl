@@ -118,7 +118,7 @@ end
 
 # plots in the Ullrish et al 2014 paper: surface pressure, 850 temperature and vorticity at day 8 and day 10
 function paperplots_baro_wave_ρθ(sol, output_dir, p, nlat, nlon)
-    (; comms_ctx, ᶜts, ᶜp, params) = p
+    (; ghost_buffer, ᶜts, ᶜp, params) = p
     days = [8, 10]
 
     # obtain pressure, temperature, and vorticity at cg points;
@@ -132,7 +132,7 @@ function paperplots_baro_wave_ρθ(sol, output_dir, p, nlat, nlon)
         ᶜT = @. TD.air_temperature(params, ᶜts)
         curl_uh = @. curlₕ(Y.c.uₕ)
         ᶜvort = Geometry.WVector.(curl_uh)
-        Spaces.weighted_dss!(ᶜvort, comms_ctx)
+        Spaces.weighted_dss!(ᶜvort)
 
         # space info to generate nc raw data
         cspace = axes(Y.c)
@@ -144,7 +144,7 @@ function paperplots_baro_wave_ρθ(sol, output_dir, p, nlat, nlon)
         remap_tmpdir = output_dir * "/remaptmp/"
         mkpath(remap_tmpdir)
 
-        ### create an nc file to store raw cg data 
+        ### create an nc file to store raw cg data
         # create data
         datafile_cc = remap_tmpdir * "/bw-raw_day" * string(day) * ".nc"
         nc = NCDataset(datafile_cc, "c")
@@ -273,7 +273,7 @@ function paperplots_baro_wave_ρe(sol, output_dir, p, nlat, nlon)
         remap_tmpdir = output_dir * "/remaptmp/"
         mkpath(remap_tmpdir)
 
-        ### create an nc file to store raw cg data 
+        ### create an nc file to store raw cg data
         # create data
         datafile_cc = remap_tmpdir * "/bw-raw_day" * string(day) * ".nc"
         nc = NCDataset(datafile_cc, "c")
