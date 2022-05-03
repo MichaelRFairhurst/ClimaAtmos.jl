@@ -232,6 +232,7 @@ function default_remaining_tendency!(Yₜ, Y, p, t)
     ᶜρ = Y.c.ρ
     ᶜuₕ = Y.c.uₕ
     ᶠw = Y.f.w
+    Yₜuₕ = Yₜ.c.uₕ
     (; ᶜuvw, ᶜK, ᶜΦ, ᶜts, ᶜp, ᶜω³, ᶠω¹², ᶠu¹², ᶠu³, ᶜf, params) = p
     point_type = eltype(Fields.local_geometry_field(axes(Y.c)).coordinates)
 
@@ -290,13 +291,12 @@ function default_remaining_tendency!(Yₜ, Y, p, t)
     @. ᶠu¹² = Geometry.Contravariant12Vector(ᶠinterp(ᶜuₕ))
     @. ᶠu³ = Geometry.Contravariant3Vector(ᶠw)
 
-    @. Yₜ.c.uₕ -=
-        ᶜinterp(ᶠω¹² × ᶠu³) + (ᶜf + ᶜω³) × Geometry.Contravariant12Vector(ᶜuₕ)
+    @. Yₜuₕ -= ᶜinterp(ᶠω¹² × ᶠu³)
+    @. Yₜuₕ -= (ᶜf + ᶜω³) × Geometry.Contravariant12Vector(ᶜuₕ)
     if point_type <: Geometry.Abstract3DPoint
-        @. Yₜ.c.uₕ -= gradₕ(ᶜp) / ᶜρ + gradₕ(ᶜK + ᶜΦ)
+        @. Yₜuₕ -= gradₕ(ᶜp) / ᶜρ + gradₕ(ᶜK + ᶜΦ)
     elseif point_type <: Geometry.Abstract2DPoint
-        @. Yₜ.c.uₕ -=
-            Geometry.Covariant12Vector(gradₕ(ᶜp) / ᶜρ + gradₕ(ᶜK + ᶜΦ))
+        @. Yₜuₕ -= Geometry.Covariant12Vector(gradₕ(ᶜp) / ᶜρ + gradₕ(ᶜK + ᶜΦ))
     end
 
     @. Yₜ.f.w -= ᶠω¹² × ᶠu¹²
