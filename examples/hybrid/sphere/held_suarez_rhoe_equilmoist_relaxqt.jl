@@ -5,6 +5,7 @@ additional_cache(Y, params, dt) = merge(
     sponge ? rayleigh_sponge_cache(Y, dt) : NamedTuple(),
     held_suarez_cache(Y),
     vertical_diffusion_boundary_layer_cache(Y),
+    relax_pbl_qt_cache(Y),
     zero_moment_microphysics_cache(Y),
 )
 function additional_tendency!(Yₜ, Y, p, t)

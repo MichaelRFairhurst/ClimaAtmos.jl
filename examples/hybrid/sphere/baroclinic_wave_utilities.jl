@@ -405,7 +405,7 @@ function vertical_diffusion_boundary_layer_tendency!(Yₜ, Y, p, t)
         )
         ᶜdivᵥ = Operators.DivergenceF2C(
             top = Operators.SetValue(Geometry.WVector(FT(0))),
-            bottom = Operators.SetValue(-mean(dif_flux_energy)),
+            bottom = Operators.SetValue(Geometry.WVector(FT(0))),
         )
         @. Yₜ.c.ρe += ᶜdivᵥ(ᶠK_E * ᶠinterp(ᶜρ) * ᶠgradᵥ((Y.c.ρe + ᶜp) / ᶜρ))
     elseif :ρe_int in propertynames(Y.c)
@@ -414,7 +414,7 @@ function vertical_diffusion_boundary_layer_tendency!(Yₜ, Y, p, t)
         )
         ᶜdivᵥ = Operators.DivergenceF2C(
             top = Operators.SetValue(Geometry.WVector(FT(0))),
-            bottom = Operators.SetValue(-mean(dif_flux_energy)),
+            bottom = Operators.SetValue(Geometry.WVector(FT(0))),
         )
         @. Yₜ.c.ρe_int +=
             ᶜdivᵥ(ᶠK_E * ᶠinterp(ᶜρ) * ᶠgradᵥ((Y.c.ρe_int + ᶜp) / ᶜρ))
@@ -425,7 +425,7 @@ function vertical_diffusion_boundary_layer_tendency!(Yₜ, Y, p, t)
             Geometry.WVector(SF.evaporation(flux_coefficients, params, Ch))
         ᶜdivᵥ = Operators.DivergenceF2C(
             top = Operators.SetValue(Geometry.WVector(FT(0))),
-            bottom = Operators.SetValue(-mean(dif_flux_ρq_tot)),
+            bottom = Operators.SetValue(Geometry.WVector(FT(0))),
         )
         @. Yₜ.c.ρq_tot += ᶜdivᵥ(ᶠK_E * ᶠinterp(ᶜρ) * ᶠgradᵥ(Y.c.ρq_tot / ᶜρ))
         @. Yₜ.c.ρ += ᶜdivᵥ(ᶠK_E * ᶠinterp(ᶜρ) * ᶠgradᵥ(Y.c.ρq_tot / ᶜρ))
@@ -434,12 +434,29 @@ end
 
 # relax qt to saturated qt in boundary layer, timescale 30 minimum
 # a hacky replacement for mhs bc
+relax_pbl_qt_cache(Y) =
+    (ᶜS_ρq_tot = similar(Y.c, FT),)
+
 function relax_pbl_qt!(Yₜ, Y, p, t)
-    (; ᶜts, params) = p 
+    (; ᶜts, ᶜS_ρq_tot, ᶜΦ, params) = p 
     ᶜqt_sat = @. TD.q_vap_saturation(params, ᶜts)
     ᶜz = Fields.coordinate_field(Y.c).z
     ᶜαₘ = @. ifelse(ᶜz < FT(2000), FT( 1 / (30*60) ), FT(0))
 
-    @. Yₜ.c.ρq_tot -= ᶜαₘ * ( Y.c.ρq_tot - Y.c.ρ * ᶜqt_sat) 
-    @. Yₜ.c.ρ -= ᶜαₘ * ( Y.c.ρq_tot - Y.c.ρ * ᶜqt_sat) 
+    @. ᶜS_ρq_tot = ᶜαₘ * ( max(0, 0.85 * Y.c.ρ * ᶜqt_sat - Y.c.ρq_tot) )
+    @. Yₜ.c.ρq_tot += ᶜS_ρq_tot
+    @. Yₜ.c.ρ += ᶜS_ρq_tot
+
+    if :ρe in propertynames(Y.c)
+        @. Yₜ.c.ρe +=
+            ᶜS_ρq_tot * (
+                TD.internal_energy_vapor(params, ᶜts) +
+                ᶜΦ
+            )
+    elseif :ρe_int in propertynames(Y.c)
+        @. Yₜ.c.ρe_int +=
+            ᶜS_ρq_tot * (
+                TD.internal_energy_vapor(params, ᶜts)
+            )
+    end
 end
