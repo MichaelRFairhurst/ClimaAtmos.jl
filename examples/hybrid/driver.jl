@@ -73,7 +73,7 @@ const sponge = false
 
 # TODO: flip order so that NamedTuple() is fallback.
 additional_cache(Y, params, dt; use_tempest_mode = false) = merge(
-    hyperdiffusion_cache(Y; κ₄ = FT(2e17), use_tempest_mode),
+    hyperdiffusion_cache(Y; κ₄ = FT(2e16), use_tempest_mode),
     sponge ? rayleigh_sponge_cache(Y, dt) : NamedTuple(),
     isnothing(microphy) ? NamedTuple() : zero_moment_microphysics_cache(Y),
     isnothing(forcing) ? NamedTuple() : held_suarez_cache(Y),
@@ -140,11 +140,12 @@ include(joinpath("sphere", "baroclinic_wave_utilities.jl"))
 
 # Variables required for driver.jl (modify as needed)
 params = BaroclinicWaveParameterSet((; dt))
-horizontal_mesh = baroclinic_wave_mesh(; params, h_elem = 4)
+horizontal_mesh = baroclinic_wave_mesh(; params, h_elem = 8)
 quad = Spaces.Quadratures.GLL{5}()
 z_max = FT(30e3)
-z_elem = 10
-z_stretch = Meshes.Uniform()
+z_elem = 15
+#z_stretch = Meshes.Uniform()
+z_stretch = Meshes.GeneralizedExponentialStretching(FT(300), FT(5000))
 ode_algorithm = OrdinaryDiffEq.Rosenbrock23
 
 !isnothing(rad) && include("radiation_utilities.jl")

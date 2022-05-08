@@ -40,6 +40,9 @@ end
 
 jld2_files = filter(x -> endswith(x, ".jld2"), readdir(jld2_dir, join = true))
 
+const ᶜinterp = Operators.InterpolateF2C()
+const curlₕ = Operators.Curl()
+
 function remap2latlon(filein, nc_dir, nlat, nlon)
     datain = jldopen(filein)
 
@@ -71,8 +74,11 @@ function remap2latlon(filein, nc_dir, nlat, nlon)
     # define variables for the prognostic states 
     nc_rho = defVar(nc, "rho", FT, cspace, ("time",))
     nc_thermo = defVar(nc, ENV["THERMO_VAR"], FT, cspace, ("time",))
+    nc_q = defVar(nc, "qt", FT, cspace, ("time",))
     nc_u = defVar(nc, "u", FT, cspace, ("time",))
     nc_v = defVar(nc, "v", FT, cspace, ("time",))
+    nc_w = defVar(nc, "w", FT, cspace, ("time",))
+    nc_ω = defVar(nc, "vort", FT, cspace, ("time",))
     # TODO: interpolate w onto center space and save it the same way as the other vars
 
     # time
@@ -89,10 +95,20 @@ function remap2latlon(filein, nc_dir, nlat, nlon)
     else
         error("Invalid ENV[[\"THERMO_VAR\"]!")
     end
+    nc_q[:, 1] = Y.c.ρq_tot ./ Y.c.ρ
     # physical horizontal velocity
     uh_phy = Geometry.transform.(Ref(Geometry.UVAxis()), Y.c.uₕ)
     nc_u[:, 1] = uh_phy.components.data.:1
     nc_v[:, 1] = uh_phy.components.data.:2
+
+    ᶠw_phy = Geometry.WVector.(Y.f.w)
+    ᶜw_phy = ᶜinterp.(ᶠw_phy)
+    nc_w[:, 1] = ᶜw_phy
+
+    curl_uh = @. curlₕ(Y.c.uₕ)
+    ᶜvort = Geometry.WVector.(curl_uh)
+    Spaces.weighted_dss!(ᶜvort)
+    nc_ω[:, 1] = ᶜvort
 
     close(nc)
 
@@ -116,12 +132,12 @@ function remap2latlon(filein, nc_dir, nlat, nlon)
         in_np = Nq,
     )
 
-    datafile_latlon = nc_dir * split(split(filein, "/")[end], ".")[1] * ".nc"
+    datafile_latlon = nc_dir * split(split(filein, "/")[end], ".")[1] * '.' * split(split(filein, "/")[end], ".")[2] * ".nc"
     apply_remap(
         datafile_latlon,
         datafile_cc,
         weightfile,
-        ["rho", ENV["THERMO_VAR"], "u", "v"],
+        ["rho", ENV["THERMO_VAR"], "u", "v", "qt", "vort", "w"],
     )
 
     rm(remap_tmpdir, recursive = true)
