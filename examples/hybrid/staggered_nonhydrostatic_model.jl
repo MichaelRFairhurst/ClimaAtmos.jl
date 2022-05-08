@@ -71,36 +71,7 @@ const ᶠgradᵥ_stencil = Operators.Operator2Stencil(ᶠgradᵥ)
 
 const C123 = Geometry.Covariant123Vector
 
-partition(Yc) =
-    TD.PhasePartition(Yc.ρq_tot / Yc.ρ, Yc.ρq_liq / Yc.ρ, Yc.ρq_ice / Yc.ρ)
-function thermo_state_ρθ(ρθ, Yc, params) # Note: θ is liquid-ice potential temp
-    if (
-        :ρq_liq in propertynames(Yc) &&
-        :ρq_ice in propertynames(Yc) &&
-        :ρq_tot in propertynames(Yc)
-    )
-        return TD.PhaseNonEquil_ρθq(params, Yc.ρ, ρθ / Yc.ρ, partition(Yc))
-    elseif :ρq_tot in propertynames(Yc)
-        return TD.PhaseEquil_ρθq(params, Yc.ρ, ρθ / Yc.ρ, Yc.ρq_tot / Yc.ρ)
-    else
-        return TD.PhaseDry_ρθ(params, Yc.ρ, ρθ / Yc.ρ)
-    end
-end
-function thermo_state_ρe_int(ρe_int, Yc, params)
-    if (
-        :ρq_liq in propertynames(Yc) &&
-        :ρq_ice in propertynames(Yc) &&
-        :ρq_tot in propertynames(Yc)
-    )
-        return TD.PhaseNonEquil(params, ρe_int / Yc.ρ, Yc.ρ, partition(Yc))
-    elseif :ρq_tot in propertynames(Yc)
-        return TD.PhaseEquil_ρeq(params, Yc.ρ, ρe_int / Yc.ρ, Yc.ρq_tot / Yc.ρ)
-    else
-        return TD.PhaseDry(params, ρe_int / Yc.ρ, Yc.ρ)
-    end
-end
-thermo_state_ρe(ρe, Yc, K, Φ, params) =
-    thermo_state_ρe_int(ρe - Yc.ρ * (K + Φ), Yc, params)
+include("thermo_states.jl")
 
 get_cache(Y, params, upwinding_mode, dt) = merge(
     default_cache(Y, params, upwinding_mode),
@@ -128,8 +99,14 @@ function default_cache(Y, params, upwinding_mode)
     else
         ts_type = TD.PhaseDry{FT}
     end
+    ρe_int_kwarg = if :ρe in propertynames(Y.c)
+        (; ρe_int = similar(Y.c.ρ))
+    else
+        NamedTuple()
+    end
     return (;
         ᶜuvw = similar(Y.c, Geometry.Covariant123Vector{FT}),
+        ρe_int_kwarg...,
         ᶜK = similar(Y.c, FT),
         ᶜΦ = FT(Planet.grav(params)) .* ᶜcoord.z,
         ᶜts = similar(Y.c, ts_type),
@@ -159,6 +136,7 @@ end
 
 function implicit_tendency!(Yₜ, Y, p, t)
     ᶜρ = Y.c.ρ
+    dρ = Yₜ.c.ρ
     ᶜuₕ = Y.c.uₕ
     ᶠw = Y.f.w
     (; ᶜK, ᶜΦ, ᶜts, ᶜp, params, ᶠupwind_product) = p
@@ -174,45 +152,49 @@ function implicit_tendency!(Yₜ, Y, p, t)
 
     @. ᶜK = norm_sqr(C123(ᶜuₕ) + C123(ᶜinterp(ᶠw))) / 2
 
-    @. Yₜ.c.ρ = -(ᶜdivᵥ(ᶠinterp(ᶜρ) * ᶠw))
+    @. dρ = -(ᶜdivᵥ(ᶠinterp(ᶜρ) * ᶠw))
 
     if :ρθ in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+        ρθ = Y.c.ρθ
+        dρθ = Yₜ.c.ρθ
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρθ(ρθ, Y.c, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
         if isnothing(ᶠupwind_product)
-            @. Yₜ.c.ρθ = -(ᶜdivᵥ(ᶠinterp(Y.c.ρθ) * ᶠw))
+            @. dρθ = -(ᶜdivᵥ(ᶠinterp(ρθ) * ᶠw))
         else
-            @. Yₜ.c.ρθ =
-                -(ᶜdivᵥ(ᶠinterp(Y.c.ρ) * ᶠupwind_product(ᶠw, Y.c.ρθ / Y.c.ρ)))
+            @. dρθ = -(ᶜdivᵥ(ᶠinterp(ᶜρ) * ᶠupwind_product(ᶠw, ρθ / ᶜρ)))
         end
     elseif :ρe in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
+        ρe = Y.c.ρe
+        dρe = Yₜ.c.ρe
+        set_thermo_state!(ᶜts, Y.c, params, ᶜK, ᶜΦ, p.ρe_int)
+        # @. ᶜts = thermo_state_ρe(ρe, Y.c, ᶜK, ᶜΦ, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
         if isnothing(ᶠupwind_product)
-            @. Yₜ.c.ρe = -(ᶜdivᵥ(ᶠinterp(Y.c.ρe + ᶜp) * ᶠw))
+            @. dρe = -(ᶜdivᵥ(ᶠinterp(ρe + ᶜp) * ᶠw))
         else
-            @. Yₜ.c.ρe =
-                -(ᶜdivᵥ(
-                    ᶠinterp(Y.c.ρ) * ᶠupwind_product(ᶠw, (Y.c.ρe + ᶜp) / Y.c.ρ),
-                ))
+            @. dρe = -(ᶜdivᵥ(ᶠinterp(ᶜρ) * ᶠupwind_product(ᶠw, (ρe + ᶜp) / ᶜρ)))
         end
     elseif :ρe_int in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
+        ρe_int = Y.c.ρe_int
+        dρe_int = Yₜ.c.ρe_int
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρe_int(ρe_int, Y.c, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
         if isnothing(ᶠupwind_product)
-            @. Yₜ.c.ρe_int =
+            @. dρe_int =
                 -(
-                    ᶜdivᵥ(ᶠinterp(Y.c.ρe_int + ᶜp) * ᶠw) -
+                    ᶜdivᵥ(ᶠinterp(ρe_int + ᶜp) * ᶠw) -
                     ᶜinterp(dot(ᶠgradᵥ(ᶜp), Geometry.Contravariant3Vector(ᶠw)))
                 )
             # or, equivalently,
             # Yₜ.c.ρe_int = -(ᶜdivᵥ(ᶠinterp(Y.c.ρe_int) * ᶠw) + ᶜp * ᶜdivᵥ(ᶠw))
         else
-            @. Yₜ.c.ρe_int =
+            @. dρe_int =
                 -(
                     ᶜdivᵥ(
-                        ᶠinterp(Y.c.ρ) *
-                        ᶠupwind_product(ᶠw, (Y.c.ρe_int + ᶜp) / Y.c.ρ),
+                        ᶠinterp(ᶜρ) * ᶠupwind_product(ᶠw, (ρe_int + ᶜp) / ᶜρ),
                     ) -
                     ᶜinterp(dot(ᶠgradᵥ(ᶜp), Geometry.Contravariant3Vector(ᶠw)))
                 )
@@ -239,7 +221,7 @@ function implicit_tendency!(Yₜ, Y, p, t)
         if isnothing(ᶠupwind_product)
             @. ᶜ𝕋ₜ = -(ᶜdivᵥ(ᶠinterp(ᶜ𝕋) * ᶠw))
         else
-            @. ᶜ𝕋ₜ = -(ᶜdivᵥ(ᶠinterp(Y.c.ρ) * ᶠupwind_product(ᶠw, ᶜ𝕋 / Y.c.ρ)))
+            @. ᶜ𝕋ₜ = -(ᶜdivᵥ(ᶠinterp(ᶜρ) * ᶠupwind_product(ᶠw, ᶜ𝕋 / ᶜρ)))
         end
     end
 
@@ -273,17 +255,20 @@ function default_remaining_tendency!(Yₜ, Y, p, t)
     # Energy conservation
 
     if :ρθ in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
         @. Yₜ.c.ρθ -= divₕ(Y.c.ρθ * ᶜuvw)
         @. Yₜ.c.ρθ -= ᶜdivᵥ(ᶠinterp(Y.c.ρθ * ᶜuₕ))
     elseif :ρe in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
+        set_thermo_state!(ᶜts, Y.c, params, ᶜK, ᶜΦ, p.ρe_int)
+        # @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
         @. Yₜ.c.ρe -= divₕ((Y.c.ρe + ᶜp) * ᶜuvw)
         @. Yₜ.c.ρe -= ᶜdivᵥ(ᶠinterp((Y.c.ρe + ᶜp) * ᶜuₕ))
     elseif :ρe_int in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
         if point_type <: Geometry.Abstract3DPoint
             @. Yₜ.c.ρe_int -=
@@ -393,7 +378,8 @@ function Wfact!(W, Y, p, dtγ, t)
 
     if :ρθ in propertynames(Y.c)
         ᶜρθ = Y.c.ρθ
-        @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
 
         if flags.∂ᶜ𝔼ₜ∂ᶠ𝕄_mode != :exact
@@ -419,7 +405,8 @@ function Wfact!(W, Y, p, dtγ, t)
     elseif :ρe in propertynames(Y.c)
         ᶜρe = Y.c.ρe
         @. ᶜK = norm_sqr(C123(ᶜuₕ) + C123(ᶜinterp(ᶠw))) / 2
-        @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
+        set_thermo_state!(ᶜts, Y.c, params, ᶜK, ᶜΦ, p.ρe_int)
+        # @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
 
         if isnothing(ᶠupwind_product)
@@ -473,7 +460,8 @@ function Wfact!(W, Y, p, dtγ, t)
         end
     elseif :ρe_int in propertynames(Y.c)
         ᶜρe_int = Y.c.ρe_int
-        @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
         @. ᶜp = TD.air_pressure(params, ᶜts)
 
         if flags.∂ᶜ𝔼ₜ∂ᶠ𝕄_mode != :exact
