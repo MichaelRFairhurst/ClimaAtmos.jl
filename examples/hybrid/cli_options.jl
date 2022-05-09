@@ -7,17 +7,19 @@ function parse_commandline()
         arg_type = String
         default = "Float32"
         "--t_end"
-        help = "Simulation end time"
-        arg_type = Float64
+        help = "Simulation end time. Examples: [`1200days`, `40secs`]"
+        arg_type = String
+        default = "10days"
         "--dt"
-        help = "Simulation time step"
-        arg_type = Float64
+        help = "Simulation time step. Examples: [`10secs`, `1hours`]"
+        arg_type = String
+        default = "400secs"
         "--dt_save_to_sol" # TODO: should we default to Inf?
-        help = "Time between saving solution, 0 means do not save"
+        help = "Time (in seconds) between saving solution, 0 means do not save"
         arg_type = Float64
         default = Float64(60 * 60 * 24)
         "--dt_save_to_disk"
-        help = "Time between saving to disk, 0 means do not save"
+        help = "Time (in seconds) between saving to disk, 0 means do not save"
         arg_type = Float64
         default = Float64(0)
         "--config" # TODO: add box

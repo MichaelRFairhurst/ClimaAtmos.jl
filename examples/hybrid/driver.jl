@@ -35,6 +35,21 @@ Random.seed!(1234)
 
 parse_arg(pa, key, default) = isnothing(pa[key]) ? default : pa[key]
 
+function time_to_seconds(s::String)
+    factor = Dict(
+        "secs" => 1,
+        "mins" => 60,
+        "hours" => 60 * 60,
+        "days" => 60 * 60 * 24,
+    )
+    @assert count(occursin.(keys(factor), Ref(s))) == 1
+    for match in keys(factor)
+        occursin(match, s) || continue
+        return parse(Float64, first(split(s, match))) * factor[match]
+    end
+    error("Uncaught case in computing time from given string.")
+end
+
 moisture_mode() = Symbol(parse_arg(parsed_args, "moist", "dry"))
 @assert moisture_mode() in (:dry, :equil, :nonequil)
 
@@ -50,8 +65,8 @@ upwinding_mode() = Symbol(parse_arg(parsed_args, "upwinding", "third_order"))
 
 # Test-specific definitions (may be overwritten in each test case file)
 # TODO: Allow some of these to be environment variables or command line arguments
-t_end = parse_arg(parsed_args, "t_end", FT(60 * 60 * 24 * 10))
-dt = FT(parse_arg(parsed_args, "dt", FT(400)))
+t_end = FT(time_to_seconds(parsed_args["t_end"]))
+dt = FT(time_to_seconds(parsed_args["dt"]))
 dt_save_to_sol = parsed_args["dt_save_to_sol"]
 dt_save_to_disk = parse_arg(parsed_args, "dt_save_to_disk", FT(0))
 jacobi_flags(::Val{:ρe}) = (; ∂ᶜ𝔼ₜ∂ᶠ𝕄_mode = :no_∂ᶜp∂ᶜK, ∂ᶠ𝕄ₜ∂ᶜρ_mode = :exact)
