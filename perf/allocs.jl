@@ -24,6 +24,11 @@ cli_options = [
     ("--TEST_NAME baroclinic_wave_rhoe --job_id alloc_sphere_baroclinic_wave_rhoe"),
     ("--TEST_NAME held_suarez_rhoe_equilmoist --vert_diff true --moist equil --forcing held_suarez --microphy 0M"),
 ]
+
+# Disable threading
+cli_options = map(cli_options) do clio
+    "$clio --enable_threading false"
+end
 #! format: on
 
 import ReportMetrics
