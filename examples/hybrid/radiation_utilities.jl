@@ -45,12 +45,16 @@ function rrtmgp_model_cache(
         pressure2ozone =
             Spline1D(input_center_pressure, input_center_volume_mixing_ratio_o3)
         if :ρθ in propertynames(Y.c)
-            ᶜts = @. thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+            # ᶜts = @. thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+            set_thermo_state!(ᶜts, Y.c, params)
         elseif :ρe in propertynames(Y.c)
             ᶜΦ = FT(Planet.grav(params)) .* Fields.coordinate_field(Y.c).z
-            ᶜts = @. thermo_state_ρe(Y.c.ρe, Y.c, 0, ᶜΦ, params)
+            ρe_int = similar(ᶜΦ) # cache
+            set_thermo_state!(ᶜts, Y.c, params, 0, ᶜΦ, ρe_int)
+            # ᶜts = @. thermo_state_ρe(Y.c.ρe, Y.c, 0, ᶜΦ, params)
         elseif :ρe_int in propertynames(Y.c)
-            ᶜts = @. thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
+            set_thermo_state!(ᶜts, Y.c, params)
+            # ᶜts = @. thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
         end
         ᶜp = @. TD.air_pressure(params, ᶜts)
         center_volume_mixing_ratio_o3 = field2array(@. FT(pressure2ozone(ᶜp)))
@@ -164,12 +168,15 @@ function rrtmgp_model_callback!(integrator)
     (; ᶠradiation_flux, idealized_insolation, idealized_h2o, rrtmgp_model) = p
 
     if :ρθ in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρθ(Y.c.ρθ, Y.c, params)
     elseif :ρe in propertynames(Y.c)
         @. ᶜK = norm_sqr(C123(Y.c.uₕ) + C123(ᶜinterp(Y.f.w))) / 2
-        @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
+        set_thermo_state!(ᶜts, Y.c, params, ᶜK, ᶜΦ, p.ρe_int)
+        # @. ᶜts = thermo_state_ρe(Y.c.ρe, Y.c, ᶜK, ᶜΦ, params)
     elseif :ρe_int in propertynames(Y.c)
-        @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
+        set_thermo_state!(ᶜts, Y.c, params)
+        # @. ᶜts = thermo_state_ρe_int(Y.c.ρe_int, Y.c, params)
     end
 
     @. ᶜp = TD.air_pressure(params, ᶜts)
